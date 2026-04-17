@@ -1,0 +1,8 @@
+project_name: airvln_v0
+dataset_root: DATA/data
+default_dataset: aerialvln-s
+output_root: DATA/v0
+seed: 100
+device: cuda
+num_workers: 0
+

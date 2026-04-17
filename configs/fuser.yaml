@@ -1,0 +1,12 @@
+w_progress: 1.0
+w_cost: 0.7
+w_prior: 0.6
+fallback:
+  low_progress_threshold: 0.05
+  low_score_threshold: 0.05
+  progress_patience: 3
+  repeated_turn_patience: 2
+  conservative_actions:
+    - MOVE_FORWARD
+    - STOP
+

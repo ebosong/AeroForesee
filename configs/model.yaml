@@ -1,0 +1,27 @@
+vision:
+  backbone: resnet50
+  pretrained: false
+  freeze: true
+  image_height: 224
+  image_width: 224
+  token_dim: 512
+history:
+  max_keyframes: 8
+  interval: 4
+trajectory:
+  history_len: 16
+  pose_delta_dim: 4
+model:
+  hidden_dim: 512
+  num_heads: 8
+  num_layers: 2
+  dropout: 0.1
+  max_milestones: 8
+training:
+  batch_size: 16
+  epochs: 10
+  lr: 0.00025
+  latent_loss_weight: 1.0
+  progress_loss_weight: 1.0
+  cost_loss_weight: 1.0
+

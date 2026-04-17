@@ -1,0 +1,125 @@
+from __future__ import annotations
+
+import argparse
+import gc
+import json
+import os
+import sys
+from pathlib import Path
+
+import numpy as np
+import torch
+import yaml
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+
+def parse_v0_args() -> tuple[argparse.Namespace, list[str]]:
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--v0-checkpoint")
+    parser.add_argument("--model-config", default="configs/model.yaml")
+    parser.add_argument("--fuser-config", default="configs/fuser.yaml")
+    parser.add_argument("--vlm-client", choices=["uniform", "qwen_api", "qwen_local"], default="uniform")
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--eval-output", default="DATA/v0/eval/results.json")
+    parser.add_argument("--diagnostics-dir", default="DATA/v0/diagnostics/eval_aerialvln")
+    args, unknown = parser.parse_known_args()
+    return args, unknown
+
+
+def main() -> None:
+    v0_args, airvln_args = parse_v0_args()
+    forced = ["--run_type", "eval", "--ablate_depth"]
+    sys.argv = [sys.argv[0]] + airvln_args + forced
+
+    from src.common.param import args as old_args
+    from src.vlnce_src.env import AirVLNENV
+    from models.action_prior import ActionPriorModule
+    from models.action_space import AirVLNActionSpace
+    from models.causal_latent_action_evaluator import CausalLatentActionEvaluator
+    from models.decision_fuser import DecisionFuser
+    from models.state_builder import MilestoneAwareStateBuilder
+    from models.vlm_clients import build_vlm_client
+    from inference.planner_loop import V0PlannerLoop
+    from utils.diagnostics import append_jsonl, ensure_dir, print_event, write_json
+
+    old_args.ablate_depth = True
+    diag_dir = ensure_dir(v0_args.diagnostics_dir)
+    device = torch.device(v0_args.device if torch.cuda.is_available() and v0_args.device == "cuda" else "cpu")
+    cfg = yaml.safe_load(open(v0_args.model_config, "r", encoding="utf-8"))
+    token_dim = int(cfg["model"]["hidden_dim"])
+    action_space = AirVLNActionSpace()
+    state_builder = MilestoneAwareStateBuilder(token_dim=token_dim, action_space=action_space)
+    evaluator = CausalLatentActionEvaluator(
+        num_actions=action_space.num_actions,
+        token_dim=token_dim,
+        num_heads=int(cfg["model"]["num_heads"]),
+        num_layers=int(cfg["model"]["num_layers"]),
+        dropout=float(cfg["model"]["dropout"]),
+    )
+    if v0_args.v0_checkpoint:
+        ckpt = torch.load(v0_args.v0_checkpoint, map_location="cpu")
+        state_builder.load_state_dict(ckpt["state_builder"], strict=False)
+        evaluator.load_state_dict(ckpt["evaluator"], strict=False)
+
+    vlm_client = build_vlm_client(v0_args.vlm_client)
+    planner = V0PlannerLoop(
+        state_builder=state_builder,
+        evaluator=evaluator,
+        action_prior=ActionPriorModule(action_space=action_space, vlm_client=vlm_client),
+        fuser=DecisionFuser.from_yaml(v0_args.fuser_config),
+        device=device,
+        history_len=int(cfg["trajectory"]["history_len"]),
+        max_keyframes=int(cfg["history"]["max_keyframes"]),
+        diagnostics_dir=str(diag_dir / "planner_loop"),
+    )
+
+    env = AirVLNENV(batch_size=old_args.batchSize, split=old_args.EVAL_DATASET, tokenizer=None)
+    stats_episodes = {}
+    print_event("run_eval_aerialvln", "start", split=old_args.EVAL_DATASET, batch_size=old_args.batchSize, ablate_depth=old_args.ablate_depth)
+    try:
+        for _ in range(0, len(env.data), env.batch_size):
+            env.next_minibatch()
+            if env.batch is None:
+                break
+            outputs = env.reset()
+            observations, _, dones, infos = [list(x) for x in zip(*outputs)]
+            for step in range(int(old_args.maxAction)):
+                result = planner.act(observations, env.batch, step)
+                append_jsonl(diag_dir / "eval_steps.jsonl", {"batch_episode_ids": [item["episode_id"] for item in env.batch], "step": step, "actions": result["actions"], "fallbacks": result["fallbacks"]})
+                env.makeActions(result["actions"])
+                outputs = env.get_obs()
+                observations, _, dones, infos = [list(x) for x in zip(*outputs)]
+                if np.array(dones).all():
+                    break
+            for idx, item in enumerate(env.batch):
+                stats_episodes[str(item["episode_id"])] = infos[idx]
+                print_event("run_eval_aerialvln", "episode_done", episode_id=item["episode_id"], success=infos[idx].get("success"), ndtw=infos[idx].get("ndtw"), steps=infos[idx].get("steps_taken"))
+            if old_args.EVAL_NUM != -1 and len(stats_episodes) >= old_args.EVAL_NUM:
+                break
+    finally:
+        try:
+            env.simulator_tool.closeScenes()
+        except Exception:
+            pass
+        gc.collect()
+
+    output = Path(v0_args.eval_output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with open(output, "w", encoding="utf-8") as f:
+        json.dump(_aggregate(stats_episodes), f, indent=2)
+    write_json(diag_dir / "summary.json", {"episodes": len(stats_episodes), "output": str(output)})
+    print_event("run_eval_aerialvln", "done", output=str(output), diagnostics=str(diag_dir))
+
+
+def _aggregate(stats_episodes: dict) -> dict:
+    numeric = {}
+    for episode in stats_episodes.values():
+        for key, value in episode.items():
+            if isinstance(value, (int, float)):
+                numeric.setdefault(key, []).append(float(value))
+    return {key: sum(values) / max(1, len(values)) for key, values in numeric.items()}
+
+
+if __name__ == "__main__":
+    main()
