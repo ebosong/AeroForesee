@@ -2,11 +2,14 @@ vision:
   backbone: dinov2_s
   pretrained: true
   freeze: true
-  # Leave empty to use Torch Hub online/cache resolution.
-  # Offline option: clone https://github.com/facebookresearch/dinov2 here and set this path.
-  dinov2_repo: ""
-  # Optional Torch Hub cache directory. Empty means PyTorch default, usually ~/.cache/torch/hub.
-  torch_hub_dir: ""
+  # Local vision backbone folder. Large downloaded files are ignored by Git.
+  assets_dir: vision_backbones
+  # Offline option: clone https://github.com/facebookresearch/dinov2 into this folder.
+  dinov2_repo: vision_backbones/dinov2
+  # Torch Hub cache/checkpoint directory used by DINOv2.
+  torch_hub_dir: vision_backbones/torch_hub
+  # Optional local ResNet checkpoint. Leave empty to use torchvision initialization.
+  resnet_weights: ""
   image_height: 224
   image_width: 224
   token_dim: 512

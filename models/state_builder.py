@@ -41,6 +41,7 @@ class MilestoneAwareStateBuilder(nn.Module):
         vision_freeze: bool = True,
         dinov2_repo: str | None = None,
         torch_hub_dir: str | None = None,
+        resnet_weights: str | None = None,
     ) -> None:
         super().__init__()
         self.action_space = action_space or AirVLNActionSpace()
@@ -51,6 +52,7 @@ class MilestoneAwareStateBuilder(nn.Module):
             freeze=vision_freeze,
             dinov2_repo=dinov2_repo,
             torch_hub_dir=torch_hub_dir,
+            resnet_weights=resnet_weights,
         )
         self.history_encoder = HistoryEncoder(token_dim=token_dim)
         self.trajectory_encoder = TrajectoryEncoder(num_actions=self.action_space.num_actions, token_dim=token_dim)

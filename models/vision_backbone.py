@@ -17,6 +17,7 @@ class VisionBackbone(nn.Module):
         freeze: bool = True,
         dinov2_repo: str | None = None,
         torch_hub_dir: str | None = None,
+        resnet_weights: str | None = None,
     ) -> None:
         super().__init__()
         self.token_dim = token_dim
@@ -25,7 +26,8 @@ class VisionBackbone(nn.Module):
         self.freeze = freeze
         self.dinov2_repo = dinov2_repo
         self.torch_hub_dir = torch_hub_dir
-        self.encoder, in_dim = self._build_encoder(backbone, pretrained, dinov2_repo, torch_hub_dir)
+        self.resnet_weights = resnet_weights
+        self.encoder, in_dim = self._build_encoder(backbone, pretrained, dinov2_repo, torch_hub_dir, resnet_weights)
         self.project = nn.Linear(in_dim, token_dim)
         if freeze:
             for param in self.encoder.parameters():
@@ -51,6 +53,7 @@ class VisionBackbone(nn.Module):
         pretrained: bool,
         dinov2_repo: str | None,
         torch_hub_dir: str | None,
+        resnet_weights: str | None,
     ) -> tuple[nn.Module, int]:
         name = str(backbone).lower()
         if name in {"dinov2_s", "dinov2_vits14", "dino_v2_s"}:
@@ -70,6 +73,7 @@ class VisionBackbone(nn.Module):
             else:
                 model = tv_models.resnet50(weights=None)
                 in_dim = model.fc.in_features
+            _load_resnet_weights(model, resnet_weights)
             model.fc = nn.Identity()
             return model, in_dim
         except Exception:
@@ -87,13 +91,28 @@ def _try_build_dinov2(
             hub_dir = Path(torch_hub_dir).expanduser()
             hub_dir.mkdir(parents=True, exist_ok=True)
             torch.hub.set_dir(str(hub_dir))
-        if local_repo:
-            model = torch.hub.load(str(Path(local_repo).expanduser()), model_name, source="local", pretrained=pretrained)
+        local_path = Path(local_repo).expanduser() if local_repo else None
+        if local_path and (local_path / "hubconf.py").exists():
+            model = torch.hub.load(str(local_path), model_name, source="local", pretrained=pretrained)
         else:
             model = torch.hub.load("facebookresearch/dinov2", model_name, pretrained=pretrained)
         return _DinoV2Wrapper(model)
     except Exception:
         return None
+
+
+def _load_resnet_weights(model: nn.Module, weights_path: str | None) -> None:
+    if not weights_path:
+        return
+    path = Path(weights_path).expanduser()
+    if not path.exists():
+        return
+    state = torch.load(path, map_location="cpu")
+    if isinstance(state, dict):
+        state = state.get("state_dict", state.get("model", state))
+    if isinstance(state, dict):
+        cleaned = {str(k).removeprefix("module."): v for k, v in state.items()}
+        model.load_state_dict(cleaned, strict=False)
 
 
 class _DinoV2Wrapper(nn.Module):

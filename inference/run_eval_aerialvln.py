@@ -60,6 +60,7 @@ def main() -> None:
         vision_freeze=bool(cfg["vision"].get("freeze", True)),
         dinov2_repo=str(cfg["vision"].get("dinov2_repo") or "") or None,
         torch_hub_dir=str(cfg["vision"].get("torch_hub_dir") or "") or None,
+        resnet_weights=str(cfg["vision"].get("resnet_weights") or "") or None,
     )
     evaluator = CausalLatentActionEvaluator(
         num_actions=action_space.num_actions,

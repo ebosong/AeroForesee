@@ -107,7 +107,7 @@ dinov2_s -> torch.hub 模型 dinov2_vits14，输出维度 384
 dinov2_b -> torch.hub 模型 dinov2_vitb14，输出维度 768
 ```
 
-默认配置如下：
+如果把 `dinov2_repo` 和 `torch_hub_dir` 留空，`torch.hub` 会使用 PyTorch 默认缓存位置：
 
 ```yaml
 vision:
@@ -118,7 +118,7 @@ vision:
   torch_hub_dir: ""
 ```
 
-有网环境下不需要手工放文件。首次运行时 `torch.hub` 会从 `facebookresearch/dinov2` 拉取代码；`pretrained: true` 时会同时下载权重。默认缓存位置由 PyTorch 决定：
+首次运行时 `torch.hub` 会从 `facebookresearch/dinov2` 拉取代码；`pretrained: true` 时会同时下载权重。PyTorch 默认缓存位置通常是：
 
 ```text
 Windows: C:\Users\<username>\.cache\torch\hub
@@ -126,29 +126,37 @@ Linux:   ~/.cache/torch/hub
 权重:    <torch hub cache>/checkpoints
 ```
 
-推荐的项目内离线放置方式是：
+本仓库已经创建了单独的视觉骨干目录：
 
 ```text
-Project workspace/
-  AirVLN_ws/
-  DATA/
-    models/
-      dinov2/          # git clone https://github.com/facebookresearch/dinov2.git
-      torch_hub/       # torch hub cache，可放 DINOv2 权重 checkpoint
+AirVLN_ws/
+  vision_backbones/
+    dinov2/       # 可放 DINOv2 本地仓库：git clone https://github.com/facebookresearch/dinov2.git
+    resnet/       # 可放 ResNet 本地权重，例如 resnet50.pth
+    torch_hub/    # Torch Hub 缓存和 DINOv2 checkpoints
 ```
 
-然后把 `configs/model.yaml` 改成：
+默认 `configs/model.yaml` 已经指向这个目录：
 
 ```yaml
 vision:
   backbone: dinov2_s
   pretrained: true
   freeze: true
-  dinov2_repo: ../DATA/models/dinov2
-  torch_hub_dir: ../DATA/models/torch_hub
+  assets_dir: vision_backbones
+  dinov2_repo: vision_backbones/dinov2
+  torch_hub_dir: vision_backbones/torch_hub
+  resnet_weights: ""
 ```
 
-`dinov2_repo` 是 DINOv2 代码仓库路径，`torch_hub_dir` 是 hub 缓存路径。相对路径按你启动脚本时的当前目录解析；建议所有命令都从 `AirVLN_ws/` 下运行。如果只是做无网 smoke test，可以临时把 `pretrained` 改成 `false`，代码会在 DINOv2 不可用时退回轻量 CNN，但正式实验应使用 `pretrained: true` 的 DINOv2。
+如果 `vision_backbones/dinov2/hubconf.py` 存在，代码会优先从本地 DINOv2 仓库加载；否则会走 `torch.hub` 在线/缓存加载，并把 hub 缓存写到 `vision_backbones/torch_hub/`。如果想用 ResNet 本地权重，把 `backbone` 改成 `resnet50` 或 `resnet18`，并设置：
+
+```yaml
+vision:
+  resnet_weights: vision_backbones/resnet/resnet50.pth
+```
+
+`vision_backbones/` 下的大模型文件默认被 `.gitignore` 忽略，不会误提交到 GitHub。相对路径按你启动脚本时的当前目录解析；建议所有命令都从 `AirVLN_ws/` 下运行。如果只是做无网 smoke test，可以临时把 `pretrained` 改成 `false`，代码会在 DINOv2 不可用时退回轻量 CNN，但正式实验应使用 `pretrained: true` 的 DINOv2。
 
 ## 3. Qwen 配置
 
@@ -339,7 +347,7 @@ fallback:
 - `model.hidden_dim`：latent token 维度，增大后表达更强但显存更高。
 - `vision.backbone`：默认 `dinov2_s`，也支持 `dinov2_b/resnet50/resnet18`；正式实验建议用 DINOv2。
 - `vision.pretrained/freeze`：默认 `true/true`，表示加载预训练权重并冻结视觉骨干；无网 smoke test 才建议临时设 `pretrained: false`。
-- `vision.dinov2_repo/torch_hub_dir`：控制 DINOv2 代码仓库和 Torch Hub 缓存放置位置，见上面的 DINOv2 放置方式。
+- `vision.dinov2_repo/torch_hub_dir/resnet_weights`：控制 DINOv2 代码仓库、Torch Hub 缓存和 ResNet 本地权重放置位置，见上面的 DINOv2 放置方式。
 - `model.num_layers/num_heads/dropout`：evaluator 容量和正则。
 - `history.max_keyframes`：视觉历史帧数，过大增加显存和延迟。
 - `trajectory.history_len`：动作/pose/fallback 历史长度。
@@ -355,7 +363,203 @@ fallback:
 3. 再调 fallback 阈值和 patience，处理卡住、连续转向、过早 STOP。
 4. 最后扩大模型容量或历史长度，避免先用大模型掩盖数据或仿真问题。
 
-## 9. 验收 Checklist
+## 9. 项目文件实现对照
+
+`细节.md` 中 V0 要求的模块已经在代码中对应落点如下：
+
+| 项目文件要求 | 代码落点 | 当前实现 |
+| --- | --- | --- |
+| Instruction-to-Milestone Parser | `prompts/milestone_prompt.txt`, `schemas/milestone_schema.py`, `preprocess/parse_instruction.py` | 离线解析，3-8 个 milestone，字段校验，失败重试，bad case 输出 |
+| Milestone-Aware State Builder | `models/vision_backbone.py`, `models/history_encoder.py`, `models/trajectory_encoder.py`, `models/state_builder.py` | 当前 RGB、关键帧历史、动作/位姿/fallback 历史、milestone/progress、prev latent 共同构成 state dict |
+| 历史关键帧规则 | `models/history_encoder.py`, `preprocess/build_step_windows.py` | 固定间隔、milestone 切换、连续转向、连续无进展规则均落成 `select_keyframe_indices` |
+| VLM-Based Action Prior | `models/action_space.py`, `models/action_prior.py`, `prompts/action_prior_prompt.txt`, `preprocess/build_action_prior_cache.py` | 官方动作集合打分、非法动作过滤、分数归一化、低 completion 抑制 STOP、训练缓存 |
+| Causal Latent Action Evaluator | `models/action_encoder.py`, `models/causal_latent_action_evaluator.py`, `preprocess/build_rollout_labels.py`, `preprocess/build_latent_targets.py`, `training/train_action_evaluator.py` | action token + causal Transformer，输出 progress/cost/next_latent，三项 loss 训练 |
+| Step-wise Decision and Execution | `models/action_mask.py`, `models/decision_fuser.py`, `models/fallback.py`, `inference/planner_loop.py` | 合法动作过滤，手工权重融合，低进展/重复转向/低分 fallback，单步执行并更新 latent |
+| AirVLN 仿真闭环与指标 | `inference/run_eval_aerialvln.py`, `src/vlnce_src/env.py` | `reset -> act -> makeActions -> get_obs -> update_measurements`，输出 success/nDTW/sDTW/path_length/oracle_success/steps |
+| 日志和可视化 | `utils/diagnostics.py` 和各阶段脚本 | 阶段日志、JSON/JSONL 诊断、PNG-only 可视化 |
+
+V0 按项目文件要求不实现 uncertainty、alignment head、OpenFly transfer、learned decision head、复杂 recovery policy；`inference/run_eval_openfly.py` 保持为 V2 占位。
+
+## 10. 复现参数总表
+
+### 配置文件
+
+`configs/model.yaml`
+
+| 参数 | 默认值 | 作用 | 常见修改 |
+| --- | --- | --- | --- |
+| `vision.backbone` | `dinov2_s` | 视觉骨干，支持 `dinov2_s/dinov2_b/resnet50/resnet18` | 正式实验用 DINOv2；快速 smoke 可用 ResNet |
+| `vision.pretrained` | `true` | 是否加载预训练权重 | 无网 smoke test 可临时设 `false` |
+| `vision.freeze` | `true` | 是否冻结视觉骨干 | 若要端到端微调设 `false` |
+| `vision.assets_dir` | `vision_backbones` | 视觉骨干统一存放目录 | 通常不改 |
+| `vision.dinov2_repo` | `vision_backbones/dinov2` | DINOv2 本地代码仓库路径 | 离线复现时把 DINOv2 clone 到这里 |
+| `vision.torch_hub_dir` | `vision_backbones/torch_hub` | Torch Hub 缓存与 DINOv2 权重目录 | 多机器复现时固定到项目目录 |
+| `vision.resnet_weights` | 空 | 本地 ResNet checkpoint 路径 | 例如 `vision_backbones/resnet/resnet50.pth` |
+| `vision.image_height/width` | `224/224` | RGB 输入尺寸 | 与数据预处理保持一致 |
+| `history.max_keyframes` | `8` | 最多保留历史关键帧数 | 显存不足时降低 |
+| `history.interval` | `4` | 固定关键帧间隔 | 历史过稀可降低 |
+| `trajectory.history_len` | `16` | 动作/位姿/fallback 历史长度 | 长程振荡多可增大 |
+| `model.hidden_dim` | `512` | latent token 维度 | 显存不足时降低 |
+| `model.num_heads/num_layers/dropout` | `8/2/0.1` | evaluator Transformer 容量 | 欠拟合增大，过拟合增大 dropout |
+| `model.max_milestones` | `8` | milestone id embedding 上限 | 与 parser 3-8 保持一致 |
+| `training.batch_size` | `16` | 训练 batch size | 显存不足时降低 |
+| `training.epochs` | `10` | 默认训练轮数 | 正式实验按 val 曲线调整 |
+| `training.lr` | `0.00025` | 学习率 | loss 震荡时降低 |
+| `training.*_loss_weight` | `1.0` | latent/progress/cost loss 权重 | 根据曲线和行为调平衡 |
+
+`configs/fuser.yaml`
+
+| 参数 | 默认值 | 作用 |
+| --- | --- | --- |
+| `w_progress` | `1.0` | progress gain 分数权重 |
+| `w_cost` | `0.7` | cost 惩罚权重 |
+| `w_prior` | `0.6` | Qwen/VLM action prior 权重 |
+| `fallback.low_progress_threshold` | `0.05` | 连续低进展判定阈值 |
+| `fallback.low_score_threshold` | `0.05` | 所有动作分数过低时触发 fallback |
+| `fallback.progress_patience` | `3` | 连续多少步低进展触发 fallback |
+| `fallback.repeated_turn_patience` | `2` | 连续多少步转向触发 fallback |
+| `fallback.conservative_actions` | `MOVE_FORWARD, STOP` | fallback 时优先考虑的保守动作 |
+
+`models/qwen_config.py`
+
+| 参数 | 作用 |
+| --- | --- |
+| `QWEN_API_KEY` | DashScope/Qwen API key，正式 API 调用前必须设置 |
+| `QWEN_API_BASE_URL` | Qwen 兼容 OpenAI API endpoint |
+| `QWEN_TEXT_MODEL` | milestone parser 用文本模型 |
+| `QWEN_VLM_MODEL` | action prior 用 VLM 模型 |
+| `QWEN_LOCAL_LLM_COMMAND` | 本地 LLM 命令，stdin 读 JSON，stdout 输出 plan JSON |
+| `QWEN_LOCAL_VLM_COMMAND` | 本地 VLM 命令，stdin 读 JSON，stdout 输出 action score JSON |
+
+### 脚本参数
+
+`preprocess/parse_instruction.py`
+
+| 参数 | 默认值 | 作用 |
+| --- | --- | --- |
+| `--dataset-json` | 必填 | AerialVLN/AerialVLN-S split JSON |
+| `--output` | `data/instruction_plan.jsonl` | milestone 解析结果 |
+| `--bad-output` | `data/bad_cases.jsonl` | 校验失败样本 |
+| `--prompt` | `prompts/milestone_prompt.txt` | parser prompt |
+| `--client` | `rule` | `rule/qwen_api/qwen_local` |
+| `--max-retries` | `1` | LLM 输出失败后的重试次数 |
+| `--diagnostics-dir` | `DATA/v0/diagnostics/parse_instruction` | 日志和 PNG 输出目录 |
+
+`preprocess/build_step_windows.py`
+
+| 参数 | 默认值 | 作用 |
+| --- | --- | --- |
+| `--dataset-json` | 必填 | split JSON |
+| `--instruction-plan` | `data/instruction_plan.jsonl` | milestone 输入 |
+| `--output` | `data/step_windows/train.jsonl` | step-window 输出 |
+| `--history-len` | `16` | 动作/位姿历史长度 |
+| `--max-keyframes` | `8` | 最多关键帧数 |
+| `--keyframe-interval` | `4` | 固定关键帧间隔 |
+| `--diagnostics-dir` | `DATA/v0/diagnostics/build_step_windows` | 诊断目录 |
+
+`preprocess/build_action_prior_cache.py`
+
+| 参数 | 默认值 | 作用 |
+| --- | --- | --- |
+| `--step-windows` | 必填 | step-window 输入 |
+| `--output` | `data/action_prior_cache/train.jsonl` | prior 缓存 |
+| `--prompt` | `prompts/action_prior_prompt.txt` | VLM prior prompt |
+| `--client` | `uniform` | `uniform/qwen_api/qwen_local` |
+| `--preview-count` | `20` | 写入预览 JSONL 的样本数 |
+| `--diagnostics-dir` | `DATA/v0/diagnostics/build_action_prior_cache` | 诊断目录 |
+
+`preprocess/build_rollout_labels.py`
+
+| 参数 | 默认值 | 作用 |
+| --- | --- | --- |
+| `--step-windows` | 必填 | step-window 输入 |
+| `--output` | `data/rollout_labels/train.jsonl` | progress/cost label 输出 |
+| `--diagnostics-dir` | `DATA/v0/diagnostics/build_rollout_labels` | 诊断目录 |
+
+`preprocess/build_latent_targets.py`
+
+| 参数 | 默认值 | 作用 |
+| --- | --- | --- |
+| `--step-windows` | 必填 | step-window 输入 |
+| `--output-dir` | `data/latent_targets/train` | latent target `.pt` 输出目录 |
+| `--index-output` | `data/latent_targets/train_index.jsonl` | latent target 索引 |
+| `--token-dim` | `512` | latent target 维度，应等于 `model.hidden_dim` |
+| `--preview-count` | `10` | 预览日志数量 |
+| `--diagnostics-dir` | `DATA/v0/diagnostics/build_latent_targets` | 诊断目录 |
+
+`training/train_action_evaluator.py`
+
+| 参数 | 默认值 | 作用 |
+| --- | --- | --- |
+| `--step-windows` | 必填 | step-window 输入 |
+| `--rollout-labels` | 必填 | progress/cost labels |
+| `--action-prior-cache` | 空 | action prior 缓存 |
+| `--latent-index` | 空 | latent target 索引 |
+| `--model-config` | `configs/model.yaml` | 模型配置 |
+| `--output-dir` | `DATA/v0/checkpoints/action_evaluator` | checkpoint 输出目录 |
+| `--device` | `cuda` | 训练设备，CUDA 不可用会回退 CPU |
+| `--batch-size` | `16` | batch size |
+| `--epochs` | `10` | 训练轮数 |
+| `--lr` | `0.00025` | 学习率 |
+| `--num-workers` | `0` | DataLoader workers |
+| `--progress-loss-weight` | `1.0` | progress loss 权重 |
+| `--cost-loss-weight` | `1.0` | cost loss 权重 |
+| `--latent-loss-weight` | `1.0` | latent loss 权重 |
+| `--preview-batches` | `2` | 每轮打印多少个 batch 预览 |
+| `--diagnostics-dir` | `DATA/v0/diagnostics/train_action_evaluator` | 训练日志和 loss PNG 输出目录 |
+
+`training/train_state_encoder.py`
+
+| 参数 | 默认值 | 作用 |
+| --- | --- | --- |
+| `--model-config` | `configs/model.yaml` | 初始化 state builder 的配置 |
+| `--output` | `DATA/v0/checkpoints/state_builder_init.pth` | 初始化 checkpoint 输出 |
+
+`training/tune_fuser.py`
+
+| 参数 | 默认值 | 作用 |
+| --- | --- | --- |
+| `--output` | `configs/fuser.yaml` | 输出 fuser 配置 |
+| `--w-progress` | `0.5 1.0 1.5` | progress 权重候选 |
+| `--w-cost` | `0.3 0.7 1.0` | cost 权重候选 |
+| `--w-prior` | `0.0 0.3 0.6` | prior 权重候选 |
+
+`inference/run_eval_aerialvln.py`
+
+| 参数 | 默认值 | 作用 |
+| --- | --- | --- |
+| `--v0-checkpoint` | 空 | evaluator checkpoint，正式 eval 应指定 `ckpt_last.pth` |
+| `--model-config` | `configs/model.yaml` | 模型配置 |
+| `--fuser-config` | `configs/fuser.yaml` | 融合/fallback 配置 |
+| `--vlm-client` | `uniform` | `uniform/qwen_api/qwen_local` |
+| `--device` | `cuda` | 推理设备，CUDA 不可用会回退 CPU |
+| `--eval-output` | `DATA/v0/eval/results.json` | 指标 JSON 输出 |
+| `--diagnostics-dir` | `DATA/v0/diagnostics/eval_aerialvln` | eval 诊断目录 |
+| `--stop-completion-threshold` | `0.35` | milestone completion 低于该值时抑制 STOP prior |
+| `--score-preview-steps` | `5` | 每个 episode 前多少步保存 action score PNG |
+
+`run_eval_aerialvln.py` 还会透传原 AirVLN 参数；复现时最常改的是：
+
+| 参数 | 默认值 | 作用 |
+| --- | --- | --- |
+| `--batchSize` | `8` | AirSim 并行 batch，调试建议 `1` |
+| `--EVAL_DATASET` | `val_unseen` | 评估 split |
+| `--EVAL_NUM` | `-1` | 限制评估 episode 数，`-1` 表示全量 |
+| `--maxAction` | `500` | 单 episode 最大步数 |
+| `--collect_type` | `TF` | 保留 AirVLN 数据/环境模式 |
+| `--simulator_tool_port` | `30000` | AirSim 通信端口 |
+| `--project_prefix` | 仓库父级 | 数据和 ENVs 的基准路径 |
+
+### 复现顺序
+
+1. 准备 `../DATA/data/aerialvln-s`、`../DATA/data/aerialvln`、`../ENVs`。
+2. 准备 `vision_backbones/`：有网可自动下载；离线则把 DINOv2 仓库放到 `vision_backbones/dinov2`，权重/cache 放到 `vision_backbones/torch_hub`。
+3. 修改 `models/qwen_config.py`，或用 `rule/uniform` 跑 smoke test。
+4. 依次跑 `parse_instruction.py -> build_step_windows.py -> build_action_prior_cache.py -> build_rollout_labels.py -> build_latent_targets.py`。
+5. 跑 `training/train_action_evaluator.py` 生成 `ckpt_last.pth`。
+6. 启动 AirSim/ENVs 后跑 `inference/run_eval_aerialvln.py`，查看 `eval-output` 和 `DATA/v0/diagnostics/**/*.png`。
+
+## 11. 验收 Checklist
 
 满足下面条件即可认为当前代码完成“仿真-导航-指标统计”的 latent world model 式 AirVLN 闭环：
 

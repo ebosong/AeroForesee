@@ -32,3 +32,11 @@ temp/*
 *.log
 
 tmp/
+
+# Local vision backbone repositories, caches, and checkpoints.
+vision_backbones/dinov2/*
+!vision_backbones/dinov2/.gitkeep
+vision_backbones/resnet/*
+!vision_backbones/resnet/.gitkeep
+vision_backbones/torch_hub/*
+!vision_backbones/torch_hub/.gitkeep
