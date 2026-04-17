@@ -26,6 +26,8 @@ def main() -> None:
         vision_backbone=str(cfg["vision"].get("backbone", "dinov2_s")),
         vision_pretrained=bool(cfg["vision"].get("pretrained", False)),
         vision_freeze=bool(cfg["vision"].get("freeze", True)),
+        dinov2_repo=str(cfg["vision"].get("dinov2_repo") or "") or None,
+        torch_hub_dir=str(cfg["vision"].get("torch_hub_dir") or "") or None,
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

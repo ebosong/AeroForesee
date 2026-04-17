@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Tuple
 
 import torch
@@ -14,13 +15,17 @@ class VisionBackbone(nn.Module):
         backbone: str = "dinov2_s",
         pretrained: bool = False,
         freeze: bool = True,
+        dinov2_repo: str | None = None,
+        torch_hub_dir: str | None = None,
     ) -> None:
         super().__init__()
         self.token_dim = token_dim
         self.backbone_name = backbone
         self.pretrained = pretrained
         self.freeze = freeze
-        self.encoder, in_dim = self._build_encoder(backbone, pretrained)
+        self.dinov2_repo = dinov2_repo
+        self.torch_hub_dir = torch_hub_dir
+        self.encoder, in_dim = self._build_encoder(backbone, pretrained, dinov2_repo, torch_hub_dir)
         self.project = nn.Linear(in_dim, token_dim)
         if freeze:
             for param in self.encoder.parameters():
@@ -40,14 +45,20 @@ class VisionBackbone(nn.Module):
         pooled_patch_token = self.project(patch_raw.mean(dim=1))
         return global_token, pooled_patch_token
 
-    def _build_encoder(self, backbone: str, pretrained: bool) -> tuple[nn.Module, int]:
+    def _build_encoder(
+        self,
+        backbone: str,
+        pretrained: bool,
+        dinov2_repo: str | None,
+        torch_hub_dir: str | None,
+    ) -> tuple[nn.Module, int]:
         name = str(backbone).lower()
         if name in {"dinov2_s", "dinov2_vits14", "dino_v2_s"}:
-            encoder = _try_build_dinov2("dinov2_vits14", pretrained)
+            encoder = _try_build_dinov2("dinov2_vits14", pretrained, dinov2_repo, torch_hub_dir)
             if encoder is not None:
                 return encoder, 384
         if name in {"dinov2_b", "dinov2_vitb14", "dino_v2_b"}:
-            encoder = _try_build_dinov2("dinov2_vitb14", pretrained)
+            encoder = _try_build_dinov2("dinov2_vitb14", pretrained, dinov2_repo, torch_hub_dir)
             if encoder is not None:
                 return encoder, 768
         try:
@@ -65,9 +76,21 @@ class VisionBackbone(nn.Module):
             return _SmallCNN(), 256
 
 
-def _try_build_dinov2(model_name: str, pretrained: bool) -> nn.Module | None:
+def _try_build_dinov2(
+    model_name: str,
+    pretrained: bool,
+    local_repo: str | None = None,
+    torch_hub_dir: str | None = None,
+) -> nn.Module | None:
     try:
-        model = torch.hub.load("facebookresearch/dinov2", model_name, pretrained=pretrained)
+        if torch_hub_dir:
+            hub_dir = Path(torch_hub_dir).expanduser()
+            hub_dir.mkdir(parents=True, exist_ok=True)
+            torch.hub.set_dir(str(hub_dir))
+        if local_repo:
+            model = torch.hub.load(str(Path(local_repo).expanduser()), model_name, source="local", pretrained=pretrained)
+        else:
+            model = torch.hub.load("facebookresearch/dinov2", model_name, pretrained=pretrained)
         return _DinoV2Wrapper(model)
     except Exception:
         return None

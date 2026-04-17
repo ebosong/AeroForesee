@@ -98,6 +98,58 @@ pip install pytorch-transformers==1.2.0
 
 原始项目参考：`https://github.com/AirVLN/AirVLN`
 
+### DINOv2 放置方式
+
+`configs/model.yaml` 里的 `vision.backbone: dinov2_s` 不是一个本地文件名，而是代码中的模型别名：
+
+```text
+dinov2_s -> torch.hub 模型 dinov2_vits14，输出维度 384
+dinov2_b -> torch.hub 模型 dinov2_vitb14，输出维度 768
+```
+
+默认配置如下：
+
+```yaml
+vision:
+  backbone: dinov2_s
+  pretrained: true
+  freeze: true
+  dinov2_repo: ""
+  torch_hub_dir: ""
+```
+
+有网环境下不需要手工放文件。首次运行时 `torch.hub` 会从 `facebookresearch/dinov2` 拉取代码；`pretrained: true` 时会同时下载权重。默认缓存位置由 PyTorch 决定：
+
+```text
+Windows: C:\Users\<username>\.cache\torch\hub
+Linux:   ~/.cache/torch/hub
+权重:    <torch hub cache>/checkpoints
+```
+
+推荐的项目内离线放置方式是：
+
+```text
+Project workspace/
+  AirVLN_ws/
+  DATA/
+    models/
+      dinov2/          # git clone https://github.com/facebookresearch/dinov2.git
+      torch_hub/       # torch hub cache，可放 DINOv2 权重 checkpoint
+```
+
+然后把 `configs/model.yaml` 改成：
+
+```yaml
+vision:
+  backbone: dinov2_s
+  pretrained: true
+  freeze: true
+  dinov2_repo: ../DATA/models/dinov2
+  torch_hub_dir: ../DATA/models/torch_hub
+```
+
+`dinov2_repo` 是 DINOv2 代码仓库路径，`torch_hub_dir` 是 hub 缓存路径。相对路径按你启动脚本时的当前目录解析；建议所有命令都从 `AirVLN_ws/` 下运行。如果只是做无网 smoke test，可以临时把 `pretrained` 改成 `false`，代码会在 DINOv2 不可用时退回轻量 CNN，但正式实验应使用 `pretrained: true` 的 DINOv2。
+
 ## 3. Qwen 配置
 
 所有 LLM/VLM 调用统一限定为 Qwen。API 版和本地版都读取：
@@ -285,8 +337,9 @@ fallback:
 `configs/model.yaml` 负责模型容量与历史长度：
 
 - `model.hidden_dim`：latent token 维度，增大后表达更强但显存更高。
-- `vision.backbone`：默认 `dinov2_s`，也支持 `dinov2_b/resnet50/resnet18`；DINOv2 不可用时会自动退回轻量 CNN，便于 smoke test。
-- `vision.pretrained/freeze`：控制视觉骨干是否加载预训练权重、是否冻结。
+- `vision.backbone`：默认 `dinov2_s`，也支持 `dinov2_b/resnet50/resnet18`；正式实验建议用 DINOv2。
+- `vision.pretrained/freeze`：默认 `true/true`，表示加载预训练权重并冻结视觉骨干；无网 smoke test 才建议临时设 `pretrained: false`。
+- `vision.dinov2_repo/torch_hub_dir`：控制 DINOv2 代码仓库和 Torch Hub 缓存放置位置，见上面的 DINOv2 放置方式。
 - `model.num_layers/num_heads/dropout`：evaluator 容量和正则。
 - `history.max_keyframes`：视觉历史帧数，过大增加显存和延迟。
 - `trajectory.history_len`：动作/pose/fallback 历史长度。

@@ -45,6 +45,8 @@ def train(args: argparse.Namespace) -> None:
         vision_backbone=str(model_cfg["vision"].get("backbone", "dinov2_s")),
         vision_pretrained=bool(model_cfg["vision"].get("pretrained", False)),
         vision_freeze=bool(model_cfg["vision"].get("freeze", True)),
+        dinov2_repo=str(model_cfg["vision"].get("dinov2_repo") or "") or None,
+        torch_hub_dir=str(model_cfg["vision"].get("torch_hub_dir") or "") or None,
     ).to(device)
     evaluator = CausalLatentActionEvaluator(
         num_actions=action_space.num_actions,
