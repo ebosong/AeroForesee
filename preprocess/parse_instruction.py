@@ -11,7 +11,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from models.llm_clients import build_llm_client
 from preprocess.common import instruction_id, instruction_text, load_episodes, write_jsonl
 from schemas.milestone_schema import validate_instruction_plan
-from utils.diagnostics import append_jsonl, ensure_dir, print_event, save_bar_svg, write_json
+from utils.diagnostics import append_jsonl, ensure_dir, print_event, save_bar_png, write_json
 
 
 def build_user_prompt(item_id: str, text: str) -> str:
@@ -56,7 +56,7 @@ def parse_dataset(args: argparse.Namespace) -> None:
     if bad_rows:
         write_jsonl(args.bad_output, bad_rows)
     write_json(diag_dir / "summary.json", {"total": len(episodes), "valid": len(good_rows), "bad": len(bad_rows)})
-    save_bar_svg(diag_dir / "milestone_count_distribution.svg", "Milestone count distribution", milestone_hist)
+    save_bar_png(diag_dir / "milestone_count_distribution.png", "Milestone count distribution", milestone_hist)
     print_event("parse_instruction", "done", valid=len(good_rows), bad=len(bad_rows), diagnostics=str(diag_dir))
 
 

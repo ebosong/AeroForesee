@@ -8,7 +8,7 @@ from torch import nn
 from models.action_space import AirVLNActionSpace
 from models.history_encoder import HistoryEncoder
 from models.trajectory_encoder import TrajectoryEncoder
-from models.vision_backbone import ResNetVisionBackbone
+from models.vision_backbone import VisionBackbone
 
 
 class HashTextEncoder(nn.Module):
@@ -36,10 +36,18 @@ class MilestoneAwareStateBuilder(nn.Module):
         token_dim: int = 512,
         max_milestones: int = 8,
         action_space: Optional[AirVLNActionSpace] = None,
+        vision_backbone: str = "dinov2_s",
+        vision_pretrained: bool = False,
+        vision_freeze: bool = True,
     ) -> None:
         super().__init__()
         self.action_space = action_space or AirVLNActionSpace()
-        self.vision_backbone = ResNetVisionBackbone(token_dim=token_dim, freeze=True)
+        self.vision_backbone = VisionBackbone(
+            token_dim=token_dim,
+            backbone=vision_backbone,
+            pretrained=vision_pretrained,
+            freeze=vision_freeze,
+        )
         self.history_encoder = HistoryEncoder(token_dim=token_dim)
         self.trajectory_encoder = TrajectoryEncoder(num_actions=self.action_space.num_actions, token_dim=token_dim)
         self.milestone_id_embedding = nn.Embedding(max_milestones + 1, token_dim)

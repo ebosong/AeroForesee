@@ -23,6 +23,9 @@ def main() -> None:
     state_builder = MilestoneAwareStateBuilder(
         token_dim=int(cfg["model"]["hidden_dim"]),
         action_space=AirVLNActionSpace(),
+        vision_backbone=str(cfg["vision"].get("backbone", "dinov2_s")),
+        vision_pretrained=bool(cfg["vision"].get("pretrained", False)),
+        vision_freeze=bool(cfg["vision"].get("freeze", True)),
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

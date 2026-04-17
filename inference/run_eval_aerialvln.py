@@ -24,6 +24,8 @@ def parse_v0_args() -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--eval-output", default="DATA/v0/eval/results.json")
     parser.add_argument("--diagnostics-dir", default="DATA/v0/diagnostics/eval_aerialvln")
+    parser.add_argument("--stop-completion-threshold", type=float, default=0.35)
+    parser.add_argument("--score-preview-steps", type=int, default=5)
     args, unknown = parser.parse_known_args()
     return args, unknown
 
@@ -42,7 +44,7 @@ def main() -> None:
     from models.state_builder import MilestoneAwareStateBuilder
     from models.vlm_clients import build_vlm_client
     from inference.planner_loop import V0PlannerLoop
-    from utils.diagnostics import append_jsonl, ensure_dir, print_event, save_bar_svg, write_json
+    from utils.diagnostics import append_jsonl, ensure_dir, print_event, save_bar_png, write_json
 
     old_args.ablate_depth = True
     diag_dir = ensure_dir(v0_args.diagnostics_dir)
@@ -50,7 +52,13 @@ def main() -> None:
     cfg = yaml.safe_load(open(v0_args.model_config, "r", encoding="utf-8"))
     token_dim = int(cfg["model"]["hidden_dim"])
     action_space = AirVLNActionSpace()
-    state_builder = MilestoneAwareStateBuilder(token_dim=token_dim, action_space=action_space)
+    state_builder = MilestoneAwareStateBuilder(
+        token_dim=token_dim,
+        action_space=action_space,
+        vision_backbone=str(cfg["vision"].get("backbone", "dinov2_s")),
+        vision_pretrained=bool(cfg["vision"].get("pretrained", False)),
+        vision_freeze=bool(cfg["vision"].get("freeze", True)),
+    )
     evaluator = CausalLatentActionEvaluator(
         num_actions=action_space.num_actions,
         token_dim=token_dim,
@@ -68,12 +76,17 @@ def main() -> None:
     planner = V0PlannerLoop(
         state_builder=state_builder,
         evaluator=evaluator,
-        action_prior=ActionPriorModule(action_space=action_space, vlm_client=vlm_client),
+        action_prior=ActionPriorModule(
+            action_space=action_space,
+            vlm_client=vlm_client,
+            stop_completion_threshold=v0_args.stop_completion_threshold,
+        ),
         fuser=fuser,
         device=device,
         history_len=int(cfg["trajectory"]["history_len"]),
         max_keyframes=int(cfg["history"]["max_keyframes"]),
         fallback_config=fuser.fallback_config,
+        score_preview_steps=v0_args.score_preview_steps,
         diagnostics_dir=str(diag_dir / "planner_loop"),
     )
 
@@ -114,7 +127,7 @@ def main() -> None:
         json.dump({"summary": summary, "episodes": stats_episodes}, f, ensure_ascii=False, indent=2)
     metric_values = {key: value for key, value in summary.items() if key != "num_episodes" and isinstance(value, (int, float))}
     if metric_values:
-        save_bar_svg(diag_dir / "eval_metrics.svg", "Eval mean metrics", metric_values)
+        save_bar_png(diag_dir / "eval_metrics.png", "Eval mean metrics", metric_values)
     write_json(diag_dir / "summary.json", {"episodes": len(stats_episodes), "output": str(output), "summary": summary})
     print_event("run_eval_aerialvln", "done", output=str(output), diagnostics=str(diag_dir))
 

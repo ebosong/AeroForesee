@@ -15,7 +15,7 @@ from models.action_space import AirVLNActionSpace
 from models.causal_latent_action_evaluator import CausalLatentActionEvaluator
 from models.state_builder import MilestoneAwareStateBuilder
 from training.v0_dataset import V0ActionDataset, collate_v0
-from utils.diagnostics import append_jsonl, ensure_dir, print_event, save_line_svg, write_json
+from utils.diagnostics import append_jsonl, ensure_dir, print_event, save_line_png, write_json
 
 
 def train(args: argparse.Namespace) -> None:
@@ -39,7 +39,13 @@ def train(args: argparse.Namespace) -> None:
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=collate_v0)
     print_event("train_action_evaluator", "dataset_loaded", samples=len(dataset), batches=len(loader), device=device)
 
-    state_builder = MilestoneAwareStateBuilder(token_dim=token_dim, action_space=action_space).to(device)
+    state_builder = MilestoneAwareStateBuilder(
+        token_dim=token_dim,
+        action_space=action_space,
+        vision_backbone=str(model_cfg["vision"].get("backbone", "dinov2_s")),
+        vision_pretrained=bool(model_cfg["vision"].get("pretrained", False)),
+        vision_freeze=bool(model_cfg["vision"].get("freeze", True)),
+    ).to(device)
     evaluator = CausalLatentActionEvaluator(
         num_actions=action_space.num_actions,
         token_dim=token_dim,
@@ -106,7 +112,7 @@ def train(args: argparse.Namespace) -> None:
         loss_curve.append(epoch_loss)
         print_event("train_action_evaluator", "epoch_done", epoch=epoch, loss=f"{epoch_loss:.6f}")
         append_jsonl(diag_dir / "training_log.jsonl", {"epoch": epoch, "loss": epoch_loss})
-        save_line_svg(diag_dir / "loss_curve.svg", "Evaluator training loss", loss_curve)
+        save_line_png(diag_dir / "loss_curve.png", "Evaluator training loss", loss_curve)
         torch.save(
             {
                 "state_builder": state_builder.state_dict(),

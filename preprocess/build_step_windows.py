@@ -17,7 +17,7 @@ from preprocess.common import (
     read_jsonl,
     write_jsonl,
 )
-from utils.diagnostics import append_jsonl, ensure_dir, print_event, save_bar_svg, write_json
+from utils.diagnostics import append_jsonl, ensure_dir, print_event, save_bar_png, write_json
 
 
 def load_plans(path: str | Path) -> Dict[str, Dict[str, Any]]:
@@ -97,7 +97,7 @@ def build(args: argparse.Namespace) -> None:
         append_jsonl(diag_dir / "events.jsonl", {"stage": "build_step_windows", "instruction_id": item_id, "steps": steps, "milestones": len(milestones)})
     write_jsonl(args.output, rows)
     write_json(diag_dir / "summary.json", {"episodes": len(episodes), "step_windows": len(rows)})
-    save_bar_svg(diag_dir / "episode_step_count_distribution.svg", "Episode step count distribution", step_hist)
+    save_bar_png(diag_dir / "episode_step_count_distribution.png", "Episode step count distribution", step_hist)
     print_event("build_step_windows", "done", step_windows=len(rows), diagnostics=str(diag_dir))
 
 

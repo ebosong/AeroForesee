@@ -1,5 +1,5 @@
 vision:
-  backbone: resnet50
+  backbone: dinov2_s
   pretrained: false
   freeze: true
   image_height: 224

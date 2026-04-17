@@ -176,7 +176,6 @@ python training/train_action_evaluator.py ^
 DATA/v0/checkpoints/action_evaluator/ckpt_last.pth
 DATA/v0/diagnostics/train_action_evaluator/training_log.jsonl
 DATA/v0/diagnostics/train_action_evaluator/loss_curve.png
-DATA/v0/diagnostics/train_action_evaluator/loss_curve.svg
 ```
 
 ## 6. Eval 闭环运行
@@ -186,6 +185,8 @@ python inference/run_eval_aerialvln.py ^
   --v0-checkpoint DATA/v0/checkpoints/action_evaluator/ckpt_last.pth ^
   --eval-output DATA/v0/eval/aerialvln_s_val_unseen.json ^
   --vlm-client qwen_api ^
+  --score-preview-steps 5 ^
+  --stop-completion-threshold 0.35 ^
   --batchSize 1 ^
   --EVAL_DATASET val_unseen ^
   --collect_type TF
@@ -226,7 +227,7 @@ AirVLNENV.reset
 
 ## 7. 诊断与 PNG 可视化
 
-所有诊断图现在都会保存 PNG，并保留同名 SVG，默认目录是 `DATA/v0/diagnostics/`。
+所有诊断图只保存 PNG，默认目录是 `DATA/v0/diagnostics/`。
 
 重点文件：
 
@@ -284,11 +285,15 @@ fallback:
 `configs/model.yaml` 负责模型容量与历史长度：
 
 - `model.hidden_dim`：latent token 维度，增大后表达更强但显存更高。
+- `vision.backbone`：默认 `dinov2_s`，也支持 `dinov2_b/resnet50/resnet18`；DINOv2 不可用时会自动退回轻量 CNN，便于 smoke test。
+- `vision.pretrained/freeze`：控制视觉骨干是否加载预训练权重、是否冻结。
 - `model.num_layers/num_heads/dropout`：evaluator 容量和正则。
 - `history.max_keyframes`：视觉历史帧数，过大增加显存和延迟。
 - `trajectory.history_len`：动作/pose/fallback 历史长度。
 - `training.lr` 与 `--lr`：loss 震荡时先降学习率。
 - `training.*_loss_weight` 与训练参数：平衡 latent、progress、cost 三类监督。
+- `--score-preview-steps`：控制 eval 时每个 episode 前多少步输出动作分数 PNG。
+- `--stop-completion-threshold`：控制 action prior 对早停动作的保守程度。
 
 推荐调参顺序：
 

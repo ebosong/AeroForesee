@@ -10,7 +10,7 @@ from models.action_prior import ActionPriorModule
 from models.action_space import AirVLNActionSpace
 from models.vlm_clients import build_vlm_client
 from preprocess.common import read_jsonl, write_jsonl
-from utils.diagnostics import append_jsonl, ensure_dir, print_event, save_bar_svg, write_json
+from utils.diagnostics import append_jsonl, ensure_dir, print_event, save_bar_png, write_json
 
 
 def build(args: argparse.Namespace) -> None:
@@ -42,7 +42,7 @@ def build(args: argparse.Namespace) -> None:
             print_event("build_action_prior_cache", "preview", sample_id=row["sample_id"], top_action=action_space.official_name(top_action), top_score=f"{scores[top_action]:.4f}")
     write_jsonl(args.output, rows)
     write_json(diag_dir / "summary.json", {"step_windows": len(windows), "cached_priors": len(rows), "client": args.client})
-    save_bar_svg(diag_dir / "top_prior_action_distribution.svg", "Top prior action distribution", top_action_hist)
+    save_bar_png(diag_dir / "top_prior_action_distribution.png", "Top prior action distribution", top_action_hist)
     print_event("build_action_prior_cache", "done", cached=len(rows), diagnostics=str(diag_dir))
 
 

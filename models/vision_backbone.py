@@ -7,11 +7,11 @@ from torch import nn
 import torch.nn.functional as F
 
 
-class ResNetVisionBackbone(nn.Module):
+class VisionBackbone(nn.Module):
     def __init__(
         self,
         token_dim: int = 512,
-        backbone: str = "resnet50",
+        backbone: str = "dinov2_s",
         pretrained: bool = False,
         freeze: bool = True,
     ) -> None:
@@ -41,10 +41,19 @@ class ResNetVisionBackbone(nn.Module):
         return global_token, pooled_patch_token
 
     def _build_encoder(self, backbone: str, pretrained: bool) -> tuple[nn.Module, int]:
+        name = str(backbone).lower()
+        if name in {"dinov2_s", "dinov2_vits14", "dino_v2_s"}:
+            encoder = _try_build_dinov2("dinov2_vits14", pretrained)
+            if encoder is not None:
+                return encoder, 384
+        if name in {"dinov2_b", "dinov2_vitb14", "dino_v2_b"}:
+            encoder = _try_build_dinov2("dinov2_vitb14", pretrained)
+            if encoder is not None:
+                return encoder, 768
         try:
             import torchvision.models as tv_models
 
-            if backbone == "resnet18":
+            if name == "resnet18":
                 model = tv_models.resnet18(weights=None)
                 in_dim = model.fc.in_features
             else:
@@ -54,6 +63,37 @@ class ResNetVisionBackbone(nn.Module):
             return model, in_dim
         except Exception:
             return _SmallCNN(), 256
+
+
+def _try_build_dinov2(model_name: str, pretrained: bool) -> nn.Module | None:
+    try:
+        model = torch.hub.load("facebookresearch/dinov2", model_name, pretrained=pretrained)
+        return _DinoV2Wrapper(model)
+    except Exception:
+        return None
+
+
+class _DinoV2Wrapper(nn.Module):
+    def __init__(self, model: nn.Module) -> None:
+        super().__init__()
+        self.model = model
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if hasattr(self.model, "forward_features"):
+            out = self.model.forward_features(x)
+            if isinstance(out, dict):
+                if "x_norm_clstoken" in out:
+                    return out["x_norm_clstoken"]
+                if "x_norm_patchtokens" in out:
+                    return out["x_norm_patchtokens"].mean(dim=1)
+        out = self.model(x)
+        if isinstance(out, dict):
+            out = next(iter(out.values()))
+        if isinstance(out, (list, tuple)):
+            out = out[0]
+        if out.ndim == 3:
+            return out[:, 0]
+        return out
 
 
 class _SmallCNN(nn.Module):

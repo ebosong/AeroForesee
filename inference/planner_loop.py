@@ -7,12 +7,13 @@ import numpy as np
 import torch
 
 from models.action_prior import ActionPriorModule
+from models.action_mask import ActionMask
 from models.action_space import AirVLNActionSpace
 from models.causal_latent_action_evaluator import CausalLatentActionEvaluator
 from models.decision_fuser import DecisionFuser
 from models.fallback import FallbackPolicy
 from models.state_builder import MilestoneAwareStateBuilder
-from utils.diagnostics import append_jsonl, ensure_dir, print_event, save_bar_svg
+from utils.diagnostics import append_jsonl, ensure_dir, print_event, save_bar_png
 
 
 @dataclass
@@ -36,10 +37,12 @@ class V0PlannerLoop:
         history_len: int = 16,
         max_keyframes: int = 8,
         fallback_config: Optional[Mapping[str, Any]] = None,
+        score_preview_steps: int = 5,
         diagnostics_dir: str = "DATA/v0/diagnostics/planner_loop",
     ) -> None:
         self.device = torch.device(device)
         self.action_space = AirVLNActionSpace()
+        self.action_mask = ActionMask(self.action_space)
         self.state_builder = state_builder.to(self.device).eval()
         self.evaluator = evaluator.to(self.device).eval()
         self.action_prior = action_prior or ActionPriorModule(action_space=self.action_space)
@@ -47,6 +50,7 @@ class V0PlannerLoop:
         self.history_len = history_len
         self.max_keyframes = max_keyframes
         self.fallback_config = dict(fallback_config or getattr(self.fuser, "fallback_config", {}) or {})
+        self.score_preview_steps = max(0, int(score_preview_steps))
         self.memories: Dict[int, EpisodeMemory] = {}
         self.diagnostics_dir = ensure_dir(diagnostics_dir)
 
@@ -72,6 +76,7 @@ class V0PlannerLoop:
             pose = np.asarray(obs.get("pose", np.zeros(7)), dtype=np.float32)
             progress = float(obs.get("progress", 0.0))
             instruction = item.get("instruction", {}).get("instruction_text", "")
+            legal_ids = self.action_mask.legal_ids(item.get("legal_action_ids"))
             milestone_text, milestone_id, completion = _milestone_from_progress(item, progress)
             if not milestone_text:
                 milestone_text = instruction
@@ -90,7 +95,7 @@ class V0PlannerLoop:
                 keyframes=memory.rgb_history[-2:],
                 milestone_text=milestone_text,
                 progress_summary=f"completion={completion:.3f}",
-                legal_action_ids=self.action_space.action_ids,
+                legal_action_ids=legal_ids,
                 milestone_completion=completion,
             ))
             memory.rgb_history.append(rgb)
@@ -118,9 +123,10 @@ class V0PlannerLoop:
         fallbacks: List[bool] = []
         scores: List[Dict[int, float]] = []
         for batch_idx, item in enumerate(batch_items):
-            progress_gain = torch.stack([per_action_outputs[a]["progress_gain"][batch_idx] for a in self.action_space.action_ids])
-            cost = torch.stack([per_action_outputs[a]["cost"][batch_idx] for a in self.action_space.action_ids])
-            fused = self.fuser.score(self.action_space.action_ids, progress_gain, cost, priors[batch_idx])
+            legal_ids = self.action_mask.legal_ids(item.get("legal_action_ids"))
+            progress_gain = torch.stack([per_action_outputs[a]["progress_gain"][batch_idx] for a in legal_ids])
+            cost = torch.stack([per_action_outputs[a]["cost"][batch_idx] for a in legal_ids])
+            fused = self.fuser.score(legal_ids, progress_gain, cost, priors[batch_idx])
             episode_id = int(item["episode_id"])
             chosen, fallback = self.memories[episode_id].fallback.select(fused, float(progress_gain.max().detach().cpu()))
             self.memories[episode_id].latent = per_action_outputs[chosen]["next_latent"][batch_idx].detach().cpu()
@@ -150,9 +156,9 @@ class V0PlannerLoop:
                     "scores": readable_scores,
                 },
             )
-            if step < 5:
-                save_bar_svg(
-                    self.diagnostics_dir / f"episode_{episode_id}_step_{step}_scores.svg",
+            if step < self.score_preview_steps:
+                save_bar_png(
+                    self.diagnostics_dir / f"episode_{episode_id}_step_{step}_scores.png",
                     f"Episode {episode_id} step {step} fused scores",
                     readable_scores,
                 )

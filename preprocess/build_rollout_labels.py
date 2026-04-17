@@ -10,7 +10,7 @@ import numpy as np
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from preprocess.common import read_jsonl, write_jsonl
-from utils.diagnostics import ensure_dir, print_event, save_bar_svg, write_json
+from utils.diagnostics import ensure_dir, print_event, save_bar_png, write_json
 
 
 def build(args: argparse.Namespace) -> None:
@@ -35,8 +35,8 @@ def build(args: argparse.Namespace) -> None:
         rows.append({"sample_id": row["sample_id"], "labels": labels})
     write_jsonl(args.output, rows)
     denom = max(1, len(windows))
-    save_bar_svg(diag_dir / "positive_progress_by_action.svg", "Positive progress labels by action", action_positive)
-    save_bar_svg(diag_dir / "average_cost_by_action.svg", "Average cost label by action", {k: v / denom for k, v in action_cost.items()})
+    save_bar_png(diag_dir / "positive_progress_by_action.png", "Positive progress labels by action", action_positive)
+    save_bar_png(diag_dir / "average_cost_by_action.png", "Average cost label by action", {k: v / denom for k, v in action_cost.items()})
     write_json(diag_dir / "summary.json", {"step_windows": len(windows), "label_rows": len(rows)})
     print_event("build_rollout_labels", "done", label_rows=len(rows), diagnostics=str(diag_dir))
 
