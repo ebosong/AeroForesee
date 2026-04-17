@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
 import torch
@@ -35,6 +35,7 @@ class V0PlannerLoop:
         device: torch.device | str = "cpu",
         history_len: int = 16,
         max_keyframes: int = 8,
+        fallback_config: Optional[Mapping[str, Any]] = None,
         diagnostics_dir: str = "DATA/v0/diagnostics/planner_loop",
     ) -> None:
         self.device = torch.device(device)
@@ -45,6 +46,7 @@ class V0PlannerLoop:
         self.fuser = fuser or DecisionFuser()
         self.history_len = history_len
         self.max_keyframes = max_keyframes
+        self.fallback_config = dict(fallback_config or getattr(self.fuser, "fallback_config", {}) or {})
         self.memories: Dict[int, EpisodeMemory] = {}
         self.diagnostics_dir = ensure_dir(diagnostics_dir)
 
@@ -159,7 +161,17 @@ class V0PlannerLoop:
     def _ensure_memories(self, batch_items: List[Dict[str, Any]]) -> None:
         active = {int(item["episode_id"]) for item in batch_items}
         for episode_id in active:
-            self.memories.setdefault(episode_id, EpisodeMemory())
+            if episode_id not in self.memories:
+                self.memories[episode_id] = EpisodeMemory(
+                    fallback=FallbackPolicy(
+                        action_space=self.action_space,
+                        low_progress_threshold=float(self.fallback_config.get("low_progress_threshold", 0.05)),
+                        low_score_threshold=float(self.fallback_config.get("low_score_threshold", 0.05)),
+                        progress_patience=int(self.fallback_config.get("progress_patience", 3)),
+                        repeated_turn_patience=int(self.fallback_config.get("repeated_turn_patience", 2)),
+                        conservative_actions=self.fallback_config.get("conservative_actions", ["MOVE_FORWARD", "STOP"]),
+                    )
+                )
 
 
 def _resize_like_training(rgb: np.ndarray, height: int = 224, width: int = 224) -> np.ndarray:

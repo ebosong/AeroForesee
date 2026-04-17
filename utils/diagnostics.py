@@ -38,6 +38,7 @@ def save_bar_svg(
     values: Mapping[str, float],
     width: int = 840,
     bar_height: int = 26,
+    save_png: bool = True,
 ) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -59,6 +60,8 @@ def save_bar_svg(
         "</svg>",
     ])
     path.write_text(svg, encoding="utf-8")
+    if save_png:
+        save_bar_png(path.with_suffix(".png"), title, values, width=width)
 
 
 def save_line_svg(
@@ -67,6 +70,7 @@ def save_line_svg(
     values: Iterable[float],
     width: int = 840,
     height: int = 360,
+    save_png: bool = True,
 ) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -95,8 +99,85 @@ def save_line_svg(
         "</svg>",
     ])
     path.write_text(svg, encoding="utf-8")
+    if save_png:
+        save_line_png(path.with_suffix(".png"), title, vals, width=width, height=height)
+
+
+def save_bar_png(
+    path: str | Path,
+    title: str,
+    values: Mapping[str, float],
+    width: int = 840,
+    height: int | None = None,
+) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    items = list(values.items())
+    if not items:
+        items = [("empty", 0.0)]
+    labels = [str(k) for k, _ in items]
+    vals = [float(v) for _, v in items]
+    height = height or 70 + max(1, len(items)) * 38
+    fig, ax = _make_figure(width, height)
+    y_positions = list(range(len(items)))
+    colors = ["#2563eb" if value >= 0 else "#dc2626" for value in vals]
+    ax.barh(y_positions, vals, color=colors)
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(labels, fontsize=9)
+    ax.invert_yaxis()
+    ax.set_title(title, loc="left", fontsize=13, fontweight="bold")
+    ax.axvline(0.0, color="#9ca3af", linewidth=0.8)
+    span = max(abs(v) for v in vals) or 1.0
+    ax.set_xlim(min(0.0, min(vals)) - 0.12 * span, max(0.0, max(vals)) + 0.18 * span)
+    for y, value in zip(y_positions, vals):
+        offset = 0.02 * span if value >= 0 else -0.02 * span
+        ha = "left" if value >= 0 else "right"
+        ax.text(value + offset, y, f"{value:.4f}", va="center", ha=ha, fontsize=8, color="#111827")
+    ax.grid(axis="x", color="#e5e7eb", linewidth=0.8)
+    ax.set_axisbelow(True)
+    fig.tight_layout()
+    fig.savefig(path, dpi=100)
+    _close_figure(fig)
+
+
+def save_line_png(
+    path: str | Path,
+    title: str,
+    values: Iterable[float],
+    width: int = 840,
+    height: int = 360,
+) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    vals = [float(v) for v in values]
+    if not vals:
+        vals = [0.0]
+    fig, ax = _make_figure(width, height)
+    ax.plot(list(range(len(vals))), vals, color="#dc2626", linewidth=2.5, marker="o", markersize=4)
+    ax.set_title(title, loc="left", fontsize=13, fontweight="bold")
+    ax.set_xlabel("step")
+    ax.set_ylabel("value")
+    ax.grid(color="#e5e7eb", linewidth=0.8)
+    fig.tight_layout()
+    fig.savefig(path, dpi=100)
+    _close_figure(fig)
 
 
 def _esc(text: Any) -> str:
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _make_figure(width: int, height: int):
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+
+    return plt.subplots(figsize=(width / 100.0, height / 100.0), dpi=100)
+
+
+def _close_figure(fig: Any) -> None:
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional
 
 import torch
 import yaml
@@ -15,18 +15,22 @@ class FuserWeights:
 
 
 class DecisionFuser:
-    def __init__(self, weights: Optional[FuserWeights] = None) -> None:
+    def __init__(self, weights: Optional[FuserWeights] = None, fallback_config: Optional[Dict[str, Any]] = None) -> None:
         self.weights = weights or FuserWeights()
+        self.fallback_config = fallback_config or {}
 
     @classmethod
     def from_yaml(cls, path: str) -> "DecisionFuser":
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
-        return cls(FuserWeights(
-            w_progress=float(data.get("w_progress", 1.0)),
-            w_cost=float(data.get("w_cost", 0.7)),
-            w_prior=float(data.get("w_prior", 0.6)),
-        ))
+        return cls(
+            FuserWeights(
+                w_progress=float(data.get("w_progress", 1.0)),
+                w_cost=float(data.get("w_cost", 0.7)),
+                w_prior=float(data.get("w_prior", 0.6)),
+            ),
+            fallback_config=dict(data.get("fallback", {}) or {}),
+        )
 
     def score(
         self,

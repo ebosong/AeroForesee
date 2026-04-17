@@ -19,11 +19,20 @@ class FallbackPolicy:
         action_space: AirVLNActionSpace | None = None,
         low_progress_threshold: float = 0.05,
         low_score_threshold: float = 0.05,
+        progress_patience: int = 3,
+        repeated_turn_patience: int = 2,
+        conservative_actions: Iterable[str] | None = None,
     ) -> None:
         self.action_space = action_space or AirVLNActionSpace()
         self.low_progress_threshold = low_progress_threshold
         self.low_score_threshold = low_score_threshold
-        self.state = FallbackState()
+        self.progress_patience = max(1, int(progress_patience))
+        self.repeated_turn_patience = max(1, int(repeated_turn_patience))
+        self.conservative_actions = list(conservative_actions or ["MOVE_FORWARD", "STOP"])
+        self.state = FallbackState(
+            progress_history=deque(maxlen=self.progress_patience),
+            action_history=deque(maxlen=self.repeated_turn_patience),
+        )
 
     def select(self, ranked_scores: Dict[int, float], progress_gain: float) -> Tuple[int, bool]:
         if not ranked_scores:
@@ -38,23 +47,30 @@ class FallbackPolicy:
 
     def _should_trigger(self, scores: Dict[int, float], progress_gain: float) -> bool:
         recent_low = list(self.state.progress_history) + [float(progress_gain)]
-        if len(recent_low) >= 3 and all(v < self.low_progress_threshold for v in recent_low[-3:]):
+        if len(recent_low) >= self.progress_patience and all(v < self.low_progress_threshold for v in recent_low[-self.progress_patience:]):
             return True
-        actions = list(self.state.action_history)
-        if len(actions) >= 1:
-            turn_left = self.action_space.id_from_official_name("TURN_LEFT")
-            turn_right = self.action_space.id_from_official_name("TURN_RIGHT")
-            best_action = max(scores, key=scores.get)
-            if actions[-1] in (turn_left, turn_right) and best_action in (turn_left, turn_right):
-                return True
+        turn_left = self.action_space.id_from_official_name("TURN_LEFT")
+        turn_right = self.action_space.id_from_official_name("TURN_RIGHT")
+        turn_ids = {turn_left, turn_right}
+        recent_actions = list(self.state.action_history) + [max(scores, key=scores.get)]
+        if len(recent_actions) >= self.repeated_turn_patience and all(action in turn_ids for action in recent_actions[-self.repeated_turn_patience:]):
+            return True
         return max(scores.values()) < self.low_score_threshold
 
     def _conservative_choice(self, scores: Dict[int, float]) -> int:
-        forward = self.action_space.id_from_official_name("MOVE_FORWARD")
         stop = self.action_space.id_from_official_name("STOP")
         top2 = [action for action, _ in sorted(scores.items(), key=lambda item: item[1], reverse=True)[:2]]
-        for action in (forward, stop):
+        conservative_ids: List[int] = []
+        for name in self.conservative_actions:
+            try:
+                conservative_ids.append(self.action_space.id_from_official_name(str(name)))
+            except KeyError:
+                continue
+        for action in conservative_ids:
             if action in top2:
                 return action
+        available = [action for action in conservative_ids if action in scores]
+        if available:
+            return max(available, key=lambda action: scores[action])
         return top2[-1] if top2 else stop
 

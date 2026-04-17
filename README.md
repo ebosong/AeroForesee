@@ -1,45 +1,112 @@
-# AeroForesee：AirVLN V0 里程碑因果规划系统
+# AeroForesee: AirVLN V0 Latent World Model 闭环
 
-本仓库保留 AirVLN 的仿真环境接口，移除了原始 Seq2Seq/CMA baseline 训练代码，新增一套面向 UAV-VLN 的 V0 系统：
+本仓库保留原 AirVLN/AerialVLN 的仿真环境接口，移除了原始 Seq2Seq/CMA baseline 训练代码，新增一套面向 UAV-VLN 的 V0 闭环系统：
 
-**显式 milestone + Qwen action prior + 轻量 causal latent action evaluator + 手工决策融合 + 单步闭环执行。**
+**显式 milestone + Qwen action prior + causal latent action evaluator + 决策融合/fallback + AirSim 单步执行 + 指标统计。**
 
-目标任务是 single-view / egocentric-view 长程 UAV Vision-Language Navigation。运行时主输入只使用：
+从任务形态上看，当前代码已经可以构成一个 latent world model 式 AirVLN 闭环：
 
-- 自然语言长指令
-- UAV 当前前视 RGB
-- 历史关键帧
-- 当前及历史轨迹
-- 当前 milestone/progress 状态
+```text
+自然语言指令/RGB/轨迹历史
+        |
+        v
+milestone-aware state builder
+        |
+        v
+causal latent action evaluator: (state, action) -> progress_gain/cost/next_latent
+        |
+        v
+Qwen action prior + DecisionFuser + FallbackPolicy
+        |
+        v
+AirVLNENV.makeActions -> AirSim 仿真推进 -> AirVLNENV.get_obs
+        |
+        v
+success / nDTW / sDTW / path_length / oracle_success / steps_taken
+```
 
-运行时不会把 depth 作为主输入；`inference/run_eval_aerialvln.py` 会强制启用 `--ablate_depth`。
+运行时主输入只使用自然语言长指令、当前前视 RGB、历史关键帧、当前及历史轨迹、当前 milestone/progress 状态。`inference/run_eval_aerialvln.py` 会强制启用 `--ablate_depth`，depth 不作为 V0 主输入。
 
 ## 1. 代码结构
 
 ```text
-configs/                 V0 配置
+configs/                 V0 模型与融合配置
 prompts/                 Qwen milestone/action-prior prompt
 schemas/                 milestone schema 校验
-models/                  V0 模型与 Qwen client
-preprocess/              离线数据构造
-training/                evaluator 训练
-inference/               planner loop 与 eval 入口
-airsim_plugin/           AirVLN/AirSim 仿真通信
-src/vlnce_src/env.py     AirVLN 环境封装
-utils/                   仿真、环境、日志、诊断工具
+models/                  state builder / action prior / latent evaluator / fuser / fallback
+preprocess/              离线 milestone、step-window、label、latent target 构造
+training/                latent action evaluator 训练与 fuser 调参
+inference/               planner loop 与 AirVLN eval 入口
+airsim_plugin/           原 AirVLN/AirSim 仿真通信
+src/vlnce_src/env.py     原 AirVLN 环境封装和指标计算
+utils/                   环境、日志、诊断图和 JSON 工具
 ```
 
-原 AirVLN baseline 的 `Model/`、`src/vlnce_src/train.py`、`src/vlnce_src/dagger_train.py` 等训练策略代码已移除；当前仓库以 V0 planner 为主。
+核心闭环文件：
 
-## 2. Qwen 配置
+- `inference/run_eval_aerialvln.py`：启动 AirVLN 环境，加载 checkpoint，逐步调用 planner，执行动作并汇总指标。
+- `inference/planner_loop.py`：维护 episode memory、构造 latent state、枚举动作、融合分数、写出每步诊断。
+- `models/causal_latent_action_evaluator.py`：因果 Transformer 评估 `(state, action)` 的 progress/cost/next_latent。
+- `src/vlnce_src/env.py`：保留原 AirVLN 的 `reset/get_obs/makeActions/update_measurements`，完成仿真推进和指标更新。
 
-所有 LLM/VLM 调用统一限定为 Qwen。API 版和本地版都读取硬编码配置：
+## 2. 环境与原 AirVLN 注意事项
+
+原 AirVLN 仓库要求 Ubuntu、Nvidia GPU、Python 3.8+ 和 Conda；仿真器约 35GB，标注数据包括 AerialVLN 与 AerialVLN-S，项目目录建议保持为：
+
+```text
+Project workspace/
+  AirVLN_ws/
+  DATA/
+    data/
+      aerialvln/
+      aerialvln-s/
+    models/
+      ddppo-models/
+  ENVs/
+    env_1/
+    env_2/
+    ...
+```
+
+本仓库默认相对路径仍按这个布局读取：
+
+```text
+../DATA/data/aerialvln
+../DATA/data/aerialvln-s
+../ENVs
+```
+
+依赖安装建议：
+
+```bash
+conda create -n AirVLN python=3.8
+conda activate AirVLN
+pip install pip==24.0 setuptools==63.2.0
+pip install -r requirements.txt
+pip install airsim==1.7.0
+pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cuXXX
+pip install pytorch-transformers==1.2.0
+```
+
+从原 AirVLN README 继承的重点注意事项：
+
+- 首次运行前确认 `./ENVs` 里的 AirSim 场景可以单独打开；无 GUI 服务器需要 headless mode 或 virtual display。
+- 默认通信端口是 `30000`；若遇到 `Address already in use`，需要释放端口或改端口。
+- 若出现 `Failed to open scenes` 或 request timeout，优先检查场景路径、GPU 可见性、AirSim 进程状态，并把 `--batchSize` 降到 `1`。
+- 原仓库提示首次使用时检查 `airsim_plugin/AirVLNSimulatorClientTool.py` 中 `_getImages` 的图像通道顺序，确保可视化颜色正常。
+- 仿真、数据、场景组织沿用 AirVLN；本仓库只替换导航决策链路，不重新定义环境协议。
+
+原始项目参考：`https://github.com/AirVLN/AirVLN`
+
+## 3. Qwen 配置
+
+所有 LLM/VLM 调用统一限定为 Qwen。API 版和本地版都读取：
 
 ```text
 models/qwen_config.py
 ```
 
-需要按你的环境修改：
+按你的环境修改：
 
 ```python
 QWEN_API_KEY = "PASTE_YOUR_QWEN_API_KEY_HERE"
@@ -51,16 +118,11 @@ QWEN_LOCAL_LLM_COMMAND = "python tools/qwen_local_llm.py"
 QWEN_LOCAL_VLM_COMMAND = "python tools/qwen_local_vlm.py"
 ```
 
-说明：
+`qwen_api` 通过 DashScope 兼容接口调用；`qwen_local` 通过本地命令调用；`rule` 和 `uniform` 只用于 smoke test。不要把真实 API key 提交到仓库。
 
-- `qwen_api`：通过 Qwen / DashScope 兼容接口调用。
-- `qwen_local`：通过本地命令调用 Qwen 模型服务或脚本。
-- `rule` 和 `uniform` 只用于 smoke test。
-- 当前提交没有写入真实 API key，避免密钥进入 GitHub。
+## 4. 离线数据构造
 
-## 3. 离线 Milestone 解析
-
-无模型 smoke test：
+先解析长指令为 milestone：
 
 ```bash
 python preprocess/parse_instruction.py ^
@@ -69,33 +131,9 @@ python preprocess/parse_instruction.py ^
   --client rule
 ```
 
-Qwen API：
+使用 Qwen API 时把 `--client rule` 改成 `--client qwen_api`。
 
-```bash
-python preprocess/parse_instruction.py ^
-  --dataset-json ../DATA/data/aerialvln-s/train.json ^
-  --output data/instruction_plan.jsonl ^
-  --client qwen_api
-```
-
-本地 Qwen：
-
-```bash
-python preprocess/parse_instruction.py ^
-  --dataset-json ../DATA/data/aerialvln-s/train.json ^
-  --output data/instruction_plan.jsonl ^
-  --client qwen_local
-```
-
-本地 LLM 命令从 stdin 接收：
-
-```json
-{"system": "...", "user": "..."}
-```
-
-并向 stdout 输出合法 JSON instruction plan。
-
-## 4. 构造训练数据
+构造训练所需的 step-window、action prior、rollout label 和 latent target：
 
 ```bash
 python preprocess/build_step_windows.py ^
@@ -106,7 +144,7 @@ python preprocess/build_step_windows.py ^
 python preprocess/build_action_prior_cache.py ^
   --step-windows data/step_windows/train.jsonl ^
   --output data/action_prior_cache/train.jsonl ^
-  --client qwen_api
+  --client uniform
 
 python preprocess/build_rollout_labels.py ^
   --step-windows data/step_windows/train.jsonl ^
@@ -118,9 +156,9 @@ python preprocess/build_latent_targets.py ^
   --index-output data/latent_targets/train_index.jsonl
 ```
 
-如果还没有 Qwen VLM，可先把 `build_action_prior_cache.py` 的 client 改成 `uniform` 跑通流程。
+没有 Qwen VLM 时，可以先用 `uniform` 跑通；正式实验再切到 `qwen_api` 或 `qwen_local`。
 
-## 5. 训练 Evaluator
+## 5. 训练 Latent Action Evaluator
 
 ```bash
 python training/train_action_evaluator.py ^
@@ -132,9 +170,16 @@ python training/train_action_evaluator.py ^
   --epochs 10
 ```
 
-V0 先复用当前 ResNet 风格视觉骨干，后续可在 `models/vision_backbone.py` 中替换 DINOv2。
+训练完成后会保存：
 
-## 6. Eval
+```text
+DATA/v0/checkpoints/action_evaluator/ckpt_last.pth
+DATA/v0/diagnostics/train_action_evaluator/training_log.jsonl
+DATA/v0/diagnostics/train_action_evaluator/loss_curve.png
+DATA/v0/diagnostics/train_action_evaluator/loss_curve.svg
+```
+
+## 6. Eval 闭环运行
 
 ```bash
 python inference/run_eval_aerialvln.py ^
@@ -146,63 +191,120 @@ python inference/run_eval_aerialvln.py ^
   --collect_type TF
 ```
 
-本地 Qwen VLM：
-
-```bash
-python inference/run_eval_aerialvln.py ^
-  --v0-checkpoint DATA/v0/checkpoints/action_evaluator/ckpt_last.pth ^
-  --eval-output DATA/v0/eval/aerialvln_s_val_unseen.json ^
-  --vlm-client qwen_local ^
-  --batchSize 1 ^
-  --EVAL_DATASET val_unseen ^
-  --collect_type TF
-```
-
-## 7. 日志和可视化怎么看
-
-每个阶段都会打印英文阶段日志，例如：
+该入口会强制补上 `--run_type eval --ablate_depth`，然后执行：
 
 ```text
-[parse_instruction] parsed | instruction_id=... milestones=...
-[build_step_windows] episode_done | instruction_id=... steps=...
-[train_action_evaluator] epoch_done | epoch=... loss=...
-[planner_loop] step_decision | episode_id=... action=... fallback=...
+AirVLNENV.reset
+  -> planner.act
+  -> AirVLNENV.makeActions
+  -> AirVLNENV.get_obs
+  -> AirVLNENV.update_measurements
+  -> aggregate metrics
 ```
 
-同时会在 `DATA/v0/diagnostics/` 下输出 JSON / JSONL / SVG：
+`--eval-output` 写出结构为：
 
-- `parse_instruction/summary.json`：合法解析数量和 bad case 数量。`bad` 越少越好。
-- `parse_instruction/milestone_count_distribution.svg`：milestone 数量分布。大多数样本应落在 3 到 8 内，且不要全部集中在同一个数量。
-- `build_step_windows/summary.json`：生成的 step-window 数量。应明显大于 episode 数量。
-- `build_step_windows/episode_step_count_distribution.svg`：每条轨迹步数分布。异常的 0 步或极端短轨迹需要检查数据。
-- `build_action_prior_cache/prior_preview.jsonl`：前若干样本的动作 prior。检查 top action 是否和 milestone 语义大致一致。
-- `build_action_prior_cache/top_prior_action_distribution.svg`：VLM 最偏好的动作分布。如果几乎全是同一个动作，说明 prompt、图像输入或 Qwen 输出可能有问题。
-- `build_rollout_labels/positive_progress_by_action.svg`：不同动作的正 progress 标签分布。若只有 STOP 或单一动作占满，需要检查标签生成逻辑。
-- `build_rollout_labels/average_cost_by_action.svg`：各动作平均 cost。GT 动作相关 cost 应整体更低。
-- `build_latent_targets/summary.json`：latent target 数量和维度。数量应与 step-window 对齐。
-- `train_action_evaluator/training_log.jsonl`：每个 epoch loss。
-- `train_action_evaluator/loss_curve.svg`：训练 loss 曲线。正常情况下应整体下降或至少稳定；持续上升说明学习率、标签或输入维度需要检查。
-- `eval_aerialvln/eval_steps.jsonl`：eval 每一步动作和 fallback 情况。
-- `eval_aerialvln/planner_loop/step_decisions.jsonl`：每一步 fused score、动作和 fallback。
-- `eval_aerialvln/planner_loop/episode_*_step_*_scores.svg`：前几步动作分数条形图。合理结果应体现 milestone 相关动作分数更高，fallback 不应频繁触发。
-
-判断模块效果的顺序建议：
-
-1. 先看 `parse_instruction`：bad case 是否少，milestone 是否有地标和空间关系。
-2. 再看 `action_prior_cache`：Qwen prior 是否能根据 milestone 改变 top action。
-3. 再看 `rollout_labels`：progress/cost 是否不是单一常数。
-4. 然后看 `train_action_evaluator`：loss 是否下降。
-5. 最后看 `planner_loop`：是否出现连续重复转向、频繁 fallback 或 STOP 过早。
-
-## 8. 仿真和数据
-
-仿真器、场景和数据集仍沿用 AirVLN/AerialVLN 的组织方式。请将数据放到工作区的：
-
-```text
-../DATA/data/aerialvln
-../DATA/data/aerialvln-s
-../ENVs
+```json
+{
+  "summary": {
+    "success": 0.0,
+    "ndtw": 0.0,
+    "sdtw": 0.0,
+    "path_length": 0.0,
+    "oracle_success": 0.0,
+    "steps_taken": 0.0,
+    "num_episodes": 0
+  },
+  "episodes": {
+    "episode_id": {
+      "success": 0.0,
+      "ndtw": 0.0
+    }
+  }
+}
 ```
 
-AirSim 通信相关代码保留在 `airsim_plugin/`，环境封装保留在 `src/vlnce_src/env.py`。
+## 7. 诊断与 PNG 可视化
 
+所有诊断图现在都会保存 PNG，并保留同名 SVG，默认目录是 `DATA/v0/diagnostics/`。
+
+重点文件：
+
+- `parse_instruction/summary.json`：合法解析数量和 bad case 数量。
+- `parse_instruction/milestone_count_distribution.png`：milestone 数量分布。
+- `build_step_windows/summary.json`：step-window 数量。
+- `build_step_windows/episode_step_count_distribution.png`：每条轨迹步数分布。
+- `build_action_prior_cache/prior_preview.jsonl`：前若干样本 action prior。
+- `build_action_prior_cache/top_prior_action_distribution.png`：VLM top action 分布。
+- `build_rollout_labels/positive_progress_by_action.png`：正 progress 标签分布。
+- `build_rollout_labels/average_cost_by_action.png`：各动作平均 cost。
+- `build_latent_targets/summary.json`：latent target 数量和维度。
+- `train_action_evaluator/loss_curve.png`：训练 loss 曲线。
+- `eval_aerialvln/eval_steps.jsonl`：每一步动作和 fallback。
+- `eval_aerialvln/eval_metrics.png`：最终平均指标图。
+- `eval_aerialvln/planner_loop/step_decisions.jsonl`：每一步 fused score。
+- `eval_aerialvln/planner_loop/episode_*_step_*_scores.png`：前几步动作分数条形图。
+
+建议检查顺序：
+
+1. `parse_instruction`：bad case 少，milestone 有地标和空间关系。
+2. `build_action_prior_cache`：top action 不应长期塌缩到同一个动作。
+3. `build_rollout_labels`：progress/cost 不应是单一常数。
+4. `train_action_evaluator`：loss 应下降或稳定。
+5. `eval_aerialvln/planner_loop`：不要频繁 fallback、连续转向或过早 STOP。
+6. `eval_metrics.png` 与 `eval-output`：确认 success、nDTW、sDTW、steps 等指标被正常统计。
+
+## 8. 调参指南
+
+优先从 `configs/fuser.yaml` 调闭环行为：
+
+```yaml
+w_progress: 1.0
+w_cost: 0.7
+w_prior: 0.6
+fallback:
+  low_progress_threshold: 0.05
+  low_score_threshold: 0.05
+  progress_patience: 3
+  repeated_turn_patience: 2
+  conservative_actions:
+    - MOVE_FORWARD
+    - STOP
+```
+
+常见现象和调法：
+
+- 过早 STOP：降低 `w_prior`，降低 `ActionPriorModule.stop_completion_threshold`，或提高 STOP 相关训练样本质量。
+- 来回转向：降低 `repeated_turn_patience`，提高 `w_cost`，检查 `episode_*_scores.png` 中 TURN_LEFT/RIGHT 是否异常偏高。
+- 一直前进但不对齐 milestone：提高 `w_prior`，检查 Qwen prompt 与 `prior_preview.jsonl`。
+- fallback 过多：降低 `low_progress_threshold` 或 `low_score_threshold`，同时检查 evaluator 是否欠训练。
+- 路径过长：提高 `w_cost`，检查 rollout label 的 `average_cost_by_action.png`。
+- 指标有 nDTW 但 success 低：检查 STOP 时机、`SUCCESS_DISTANCE` 和最终位置是否接近目标。
+
+`configs/model.yaml` 负责模型容量与历史长度：
+
+- `model.hidden_dim`：latent token 维度，增大后表达更强但显存更高。
+- `model.num_layers/num_heads/dropout`：evaluator 容量和正则。
+- `history.max_keyframes`：视觉历史帧数，过大增加显存和延迟。
+- `trajectory.history_len`：动作/pose/fallback 历史长度。
+- `training.lr` 与 `--lr`：loss 震荡时先降学习率。
+- `training.*_loss_weight` 与训练参数：平衡 latent、progress、cost 三类监督。
+
+推荐调参顺序：
+
+1. 先用 `uniform` prior 跑 smoke test，确认数据构造和 AirSim 闭环可用。
+2. 固定模型，调 `w_progress/w_cost/w_prior`，观察 `eval_metrics.png` 和 step score PNG。
+3. 再调 fallback 阈值和 patience，处理卡住、连续转向、过早 STOP。
+4. 最后扩大模型容量或历史长度，避免先用大模型掩盖数据或仿真问题。
+
+## 9. 验收 Checklist
+
+满足下面条件即可认为当前代码完成“仿真-导航-指标统计”的 latent world model 式 AirVLN 闭环：
+
+- `inference/run_eval_aerialvln.py` 能创建 `AirVLNENV` 并完成 `reset/get_obs/makeActions` 循环。
+- `V0PlannerLoop` 每步输出 action、fallback、fused score 和 next latent。
+- `src/vlnce_src/env.py` 正常更新 `success/ndtw/sdtw/path_length/oracle_success/steps_taken`。
+- `--eval-output` 包含 `summary` 和 `episodes`。
+- `DATA/v0/diagnostics/eval_aerialvln/eval_metrics.png` 存在。
+- `DATA/v0/diagnostics/eval_aerialvln/planner_loop/episode_*_step_*_scores.png` 存在。
+- README 中的调参项与实际配置文件、代码行为一致。

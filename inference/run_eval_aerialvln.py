@@ -6,6 +6,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -41,7 +42,7 @@ def main() -> None:
     from models.state_builder import MilestoneAwareStateBuilder
     from models.vlm_clients import build_vlm_client
     from inference.planner_loop import V0PlannerLoop
-    from utils.diagnostics import append_jsonl, ensure_dir, print_event, write_json
+    from utils.diagnostics import append_jsonl, ensure_dir, print_event, save_bar_svg, write_json
 
     old_args.ablate_depth = True
     diag_dir = ensure_dir(v0_args.diagnostics_dir)
@@ -63,14 +64,16 @@ def main() -> None:
         evaluator.load_state_dict(ckpt["evaluator"], strict=False)
 
     vlm_client = build_vlm_client(v0_args.vlm_client)
+    fuser = DecisionFuser.from_yaml(v0_args.fuser_config)
     planner = V0PlannerLoop(
         state_builder=state_builder,
         evaluator=evaluator,
         action_prior=ActionPriorModule(action_space=action_space, vlm_client=vlm_client),
-        fuser=DecisionFuser.from_yaml(v0_args.fuser_config),
+        fuser=fuser,
         device=device,
         history_len=int(cfg["trajectory"]["history_len"]),
         max_keyframes=int(cfg["history"]["max_keyframes"]),
+        fallback_config=fuser.fallback_config,
         diagnostics_dir=str(diag_dir / "planner_loop"),
     )
 
@@ -93,7 +96,7 @@ def main() -> None:
                 if np.array(dones).all():
                     break
             for idx, item in enumerate(env.batch):
-                stats_episodes[str(item["episode_id"])] = infos[idx]
+                stats_episodes[str(item["episode_id"])] = _to_jsonable(infos[idx])
                 print_event("run_eval_aerialvln", "episode_done", episode_id=item["episode_id"], success=infos[idx].get("success"), ndtw=infos[idx].get("ndtw"), steps=infos[idx].get("steps_taken"))
             if old_args.EVAL_NUM != -1 and len(stats_episodes) >= old_args.EVAL_NUM:
                 break
@@ -106,9 +109,13 @@ def main() -> None:
 
     output = Path(v0_args.eval_output)
     output.parent.mkdir(parents=True, exist_ok=True)
+    summary = _aggregate(stats_episodes)
     with open(output, "w", encoding="utf-8") as f:
-        json.dump(_aggregate(stats_episodes), f, indent=2)
-    write_json(diag_dir / "summary.json", {"episodes": len(stats_episodes), "output": str(output)})
+        json.dump({"summary": summary, "episodes": stats_episodes}, f, ensure_ascii=False, indent=2)
+    metric_values = {key: value for key, value in summary.items() if key != "num_episodes" and isinstance(value, (int, float))}
+    if metric_values:
+        save_bar_svg(diag_dir / "eval_metrics.svg", "Eval mean metrics", metric_values)
+    write_json(diag_dir / "summary.json", {"episodes": len(stats_episodes), "output": str(output), "summary": summary})
     print_event("run_eval_aerialvln", "done", output=str(output), diagnostics=str(diag_dir))
 
 
@@ -116,9 +123,25 @@ def _aggregate(stats_episodes: dict) -> dict:
     numeric = {}
     for episode in stats_episodes.values():
         for key, value in episode.items():
+            if isinstance(value, bool):
+                continue
             if isinstance(value, (int, float)):
                 numeric.setdefault(key, []).append(float(value))
-    return {key: sum(values) / max(1, len(values)) for key, values in numeric.items()}
+    summary = {key: sum(values) / max(1, len(values)) for key, values in numeric.items()}
+    summary["num_episodes"] = len(stats_episodes)
+    return summary
+
+
+def _to_jsonable(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
 
 
 if __name__ == "__main__":
