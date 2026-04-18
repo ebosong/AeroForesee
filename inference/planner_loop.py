@@ -21,6 +21,8 @@ class EpisodeMemory:
     rgb_history: List[np.ndarray] = field(default_factory=list)
     action_history: List[int] = field(default_factory=list)
     pose_history: List[np.ndarray] = field(default_factory=list)
+    progress_history: List[float] = field(default_factory=list)
+    global_progress_history: List[float] = field(default_factory=list)
     fallback_history: List[float] = field(default_factory=list)
     latent: Optional[torch.Tensor] = None
     fallback: FallbackPolicy = field(default_factory=FallbackPolicy)
@@ -80,6 +82,9 @@ class V0PlannerLoop:
             milestone_text, milestone_id, completion = _milestone_from_progress(item, progress)
             if not milestone_text:
                 milestone_text = instruction
+            previous_completion = memory.progress_history[-1] if memory.progress_history else completion
+            previous_global_progress = memory.global_progress_history[-1] if memory.global_progress_history else progress
+            recent_progress_flag = float(completion > previous_completion + 1e-4 or progress > previous_global_progress + 1e-4)
             rgbs.append(_resize_like_training(rgb))
             histories.append(_pad_history(memory.rgb_history[-self.max_keyframes:], self.max_keyframes))
             action_histories.append(_pad_ints(memory.action_history[-self.history_len:], self.history_len))
@@ -88,18 +93,20 @@ class V0PlannerLoop:
             milestone_ids.append(milestone_id)
             milestone_texts.append(milestone_text)
             completions.append(completion)
-            recent_progress.append(float(progress > 0.0))
+            recent_progress.append(recent_progress_flag)
             prev_latents.append(memory.latent if memory.latent is not None else torch.zeros(self.state_builder.token_dim))
             priors.append(self.action_prior.score(
                 current_rgb=rgb,
                 keyframes=memory.rgb_history[-2:],
                 milestone_text=milestone_text,
-                progress_summary=f"completion={completion:.3f}",
+                progress_summary=_progress_summary(completion, progress, memory.action_history[-4:], recent_progress_flag),
                 legal_action_ids=legal_ids,
                 milestone_completion=completion,
             ))
             memory.rgb_history.append(rgb)
             memory.pose_history.append(pose)
+            memory.progress_history.append(completion)
+            memory.global_progress_history.append(progress)
 
         state = self.state_builder(
             current_rgb=torch.tensor(np.stack(rgbs), dtype=torch.float32, device=self.device),
@@ -153,6 +160,9 @@ class V0PlannerLoop:
                     "action_id": chosen,
                     "action_name": self.action_space.official_name(chosen),
                     "fallback": fallback,
+                    "milestone_id": milestone_ids[batch_idx],
+                    "milestone_text": milestone_texts[batch_idx],
+                    "milestone_completion": completions[batch_idx],
                     "scores": readable_scores,
                 },
             )
@@ -225,15 +235,27 @@ def _pose_deltas(history: List[np.ndarray], current_pose: np.ndarray, length: in
 
 def _milestone_from_progress(item: Dict[str, Any], progress: float) -> tuple[str, int, float]:
     milestones = item.get("milestones") or item.get("instruction_plan") or []
+    if isinstance(milestones, dict):
+        milestones = milestones.get("milestones") or []
     if not milestones:
         return "", 1, progress
     idx = max(0, min(len(milestones) - 1, int(progress * len(milestones))))
     milestone = milestones[idx]
     text = (
         f"{milestone.get('action_type', '')} {milestone.get('spatial_relation', '')} "
-        f"{', '.join(milestone.get('landmarks', []))}"
+        f"{', '.join(milestone.get('landmarks', []))}. "
+        f"cues: {'; '.join(milestone.get('verification_cues', []))}"
     ).strip()
     local_start = idx / max(1, len(milestones))
     local_end = (idx + 1) / max(1, len(milestones))
     local_completion = (progress - local_start) / max(1e-6, local_end - local_start)
     return text, int(milestone.get("mid", idx + 1)), float(np.clip(local_completion, 0.0, 1.0))
+
+
+def _progress_summary(completion: float, global_progress: float, recent_actions: List[int], recent_progress_flag: float) -> str:
+    return (
+        f"milestone_completion={completion:.3f}; "
+        f"global_progress={global_progress:.3f}; "
+        f"recent_progress={bool(recent_progress_flag)}; "
+        f"recent_actions={list(recent_actions)}"
+    )

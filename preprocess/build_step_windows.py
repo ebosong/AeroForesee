@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
+import numpy as np
+
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from models.history_encoder import select_keyframe_indices
@@ -64,6 +66,8 @@ def build(args: argparse.Namespace) -> None:
         for t in range(steps):
             mid = milestone_ids[t]
             milestone = milestones[mid - 1]
+            local_completion = _local_completion(progress_values[t], mid, len(milestones))
+            next_mid = milestone_ids[t + 1] if t + 1 < len(milestone_ids) else mid
             start = max(0, t - args.history_len)
             action_history = actions[start:t]
             deltas = [pose_delta(ref_path, i) for i in range(start, t)] if ref_path else []
@@ -79,11 +83,17 @@ def build(args: argparse.Namespace) -> None:
                 "trajectory_id": episode.get("trajectory_id"),
                 "scene_id": episode.get("scene_id"),
                 "t": t,
+                "prev_sample_id": f"{item_id}_{t - 1}" if t > 0 else None,
+                "next_sample_id": f"{item_id}_{t + 1}" if t + 1 < steps else None,
                 "instruction_id": item_id,
                 "milestone_id": mid,
+                "next_milestone_id": next_mid,
                 "milestone": milestone,
                 "milestone_text": milestone_to_text(milestone),
-                "completion": progress_values[t],
+                "completion": local_completion,
+                "milestone_completion": local_completion,
+                "global_completion": progress_values[t],
+                "next_global_completion": progress_values[t + 1] if t + 1 < len(progress_values) else progress_values[t],
                 "recent_progress_flag": float(t > 0 and progress_values[t] > progress_values[t - 1]),
                 "gt_action": actions[t],
                 "next_action": actions[t + 1] if t + 1 < len(actions) else 0,
@@ -131,6 +141,14 @@ def _path_at(episode: Dict[str, Any], keys: List[str], index: int) -> str | None
             if value:
                 return str(value)
     return None
+
+
+def _local_completion(global_progress: float, milestone_id: int, num_milestones: int) -> float:
+    if num_milestones <= 0:
+        return float(global_progress)
+    local_start = (milestone_id - 1) / num_milestones
+    local_end = milestone_id / num_milestones
+    return float(np.clip((global_progress - local_start) / max(1e-6, local_end - local_start), 0.0, 1.0))
 
 
 if __name__ == "__main__":

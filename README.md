@@ -336,9 +336,12 @@ python preprocess/build_action_prior_cache.py ^
 python preprocess/build_action_prior_cache.py ^
   --step-windows data/step_windows/train.jsonl ^
   --output data/action_prior_cache/train.jsonl ^
+  --image-root ../DATA/data/aerialvln-s ^
   --client qwen_api ^
   --preview-count 20
 ```
+
+`build_action_prior_cache.py` 会读取 `rgb_path` 和 `keyframe_rgb_paths`，把“当前 RGB + 最近关键帧 + milestone/progress 摘要 + 官方动作表”一起送给 VLM；`summary.json` 里的 `current_rgb_loaded` 和 `keyframes_loaded` 用来检查视觉证据是否真的接入。
 
 结果：
 
@@ -411,8 +414,11 @@ python training/train_action_evaluator.py ^
   --gpu-ids 0 ^
   --batch-size 16 ^
   --epochs 10 ^
-  --lr 0.00025
+  --lr 0.00025 ^
+  --prior-loss-weight 0.5
 ```
+
+训练时 `prev_latent` 会从上一时刻 latent target 递推读取；`--prior-loss-weight` 会把离线 action prior 作为 progress/cost supervision 的样本权重使用。
 
 结果：
 
@@ -452,6 +458,7 @@ python inference/run_eval_aerialvln.py ^
   --fuser-config configs/fuser.yaml ^
   --eval-output DATA/v0/eval/aerialvln_val_unseen.json ^
   --diagnostics-dir DATA/v0/diagnostics/eval_aerialvln ^
+  --instruction-plan data/instruction_plan.jsonl ^
   --vlm-client qwen_api ^
   --device cuda ^
   --gpu-ids 0 ^
@@ -540,11 +547,11 @@ DATA/v0/diagnostics/eval_aerialvln/planner_loop/episode_*_step_*_scores.png
 | --- | --- |
 | `parse_instruction.py` | `--dataset-json`, `--output`, `--bad-output`, `--client`, `--max-retries`, `--diagnostics-dir` |
 | `build_step_windows.py` | `--dataset-json`, `--instruction-plan`, `--history-len`, `--max-keyframes`, `--keyframe-interval` |
-| `build_action_prior_cache.py` | `--step-windows`, `--output`, `--client`, `--preview-count` |
+| `build_action_prior_cache.py` | `--step-windows`, `--output`, `--image-root`, `--client`, `--preview-count` |
 | `build_rollout_labels.py` | `--step-windows`, `--output` |
 | `build_latent_targets.py` | `--step-windows`, `--model-config`, `--image-root`, `--device`, `--gpu-ids`, `--token-dim` |
-| `train_action_evaluator.py` | `--step-windows`, `--rollout-labels`, `--action-prior-cache`, `--latent-index`, `--image-root`, `--device`, `--gpu-ids`, `--batch-size`, `--epochs`, `--lr` |
-| `run_eval_aerialvln.py` | `--v0-checkpoint`, `--vlm-client`, `--device`, `--gpu-ids`, `--score-preview-steps`, `--stop-completion-threshold`, `--batchSize`, `--EVAL_DATASET`, `--EVAL_NUM`, `--maxAction`, `--simulator_tool_port` |
+| `train_action_evaluator.py` | `--step-windows`, `--rollout-labels`, `--action-prior-cache`, `--latent-index`, `--image-root`, `--device`, `--gpu-ids`, `--batch-size`, `--epochs`, `--lr`, `--prior-loss-weight` |
+| `run_eval_aerialvln.py` | `--v0-checkpoint`, `--instruction-plan`, `--vlm-client`, `--device`, `--gpu-ids`, `--score-preview-steps`, `--stop-completion-threshold`, `--batchSize`, `--EVAL_DATASET`, `--EVAL_NUM`, `--maxAction`, `--simulator_tool_port` |
 | `AirVLNSimulatorServerTool.py` | `--gpus`/`--gpu-ids`, `--port` |
 
 ### 8.5 原 AirVLN 透传参数

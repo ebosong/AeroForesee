@@ -38,6 +38,7 @@ def train(args: argparse.Namespace) -> None:
         image_width=image_w,
         max_keyframes=int(model_cfg["history"]["max_keyframes"]),
         image_root=args.image_root,
+        latent_dim=token_dim,
     )
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=collate_v0)
     print_event(
@@ -99,8 +100,9 @@ def train(args: argparse.Namespace) -> None:
                 fallback_flags=batch["fallback_flags"],
             )
             pred = evaluator(state, batch["action_id"])
-            loss_progress = F.mse_loss(pred["progress_gain"], batch["progress_label"])
-            loss_cost = F.mse_loss(pred["cost"], batch["cost_label"])
+            prior_weight = 1.0 + args.prior_loss_weight * batch["prior"].clamp(min=0.0, max=1.0)
+            loss_progress = (prior_weight * F.mse_loss(pred["progress_gain"], batch["progress_label"], reduction="none")).mean()
+            loss_cost = (prior_weight * F.mse_loss(pred["cost"], batch["cost_label"], reduction="none")).mean()
             loss_latent = F.mse_loss(pred["next_latent"], batch["latent_target"])
             loss = (
                 args.progress_loss_weight * loss_progress
@@ -121,6 +123,7 @@ def train(args: argparse.Namespace) -> None:
                     progress_loss=f"{float(loss_progress.detach().cpu()):.6f}",
                     cost_loss=f"{float(loss_cost.detach().cpu()):.6f}",
                     latent_loss=f"{float(loss_latent.detach().cpu()):.6f}",
+                    prior_weight_mean=f"{float(prior_weight.mean().detach().cpu()):.6f}",
                 )
         denom = max(1, len(loader))
         epoch_loss = running / denom
@@ -154,6 +157,7 @@ def train(args: argparse.Namespace) -> None:
             "gpu_ids": device_selection.gpu_ids,
             "cuda_visible_devices": device_selection.cuda_visible_devices,
             "device_note": device_selection.note,
+            "prior_loss_weight": args.prior_loss_weight,
         },
     )
     print_event("train_action_evaluator", "done", checkpoint=str(output_dir / "ckpt_last.pth"), diagnostics=str(diag_dir))
@@ -184,6 +188,7 @@ def main() -> None:
     parser.add_argument("--progress-loss-weight", type=float, default=1.0)
     parser.add_argument("--cost-loss-weight", type=float, default=1.0)
     parser.add_argument("--latent-loss-weight", type=float, default=1.0)
+    parser.add_argument("--prior-loss-weight", type=float, default=0.5, help="Use cached action priors as sample weights for progress/cost supervision.")
     parser.add_argument("--diagnostics-dir", default="DATA/v0/diagnostics/train_action_evaluator")
     parser.add_argument("--preview-batches", type=int, default=2)
     train(parser.parse_args())

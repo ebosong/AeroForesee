@@ -21,11 +21,13 @@ class V0ActionDataset(Dataset):
         image_width: int = 224,
         max_keyframes: int = 8,
         image_root: str | None = None,
+        latent_dim: int = 512,
     ) -> None:
         self.windows = {row["sample_id"]: row for row in read_jsonl(step_windows)}
         label_rows = {row["sample_id"]: row["labels"] for row in read_jsonl(rollout_labels)}
         self.prior = _load_prior(action_prior_cache)
         self.latents = _load_latent_index(latent_index)
+        self.prev_latents = self._build_prev_latent_index()
         self.items: List[tuple[str, int]] = []
         for sample_id, labels in label_rows.items():
             if sample_id not in self.windows:
@@ -37,6 +39,7 @@ class V0ActionDataset(Dataset):
         self.image_width = image_width
         self.max_keyframes = max_keyframes
         self.image_root = Path(image_root) if image_root else None
+        self.latent_dim = latent_dim
 
     def __len__(self) -> int:
         return len(self.items)
@@ -46,7 +49,8 @@ class V0ActionDataset(Dataset):
         row = self.windows[sample_id]
         label = self.labels[sample_id][str(action_id)]
         latent_path = self.latents.get(sample_id)
-        latent_target = torch.load(latent_path, map_location="cpu") if latent_path else torch.zeros(512)
+        latent_target = _load_latent(latent_path, latent_dim=self.latent_dim)
+        prev_latent = _load_latent(self.prev_latents.get(sample_id), fallback=torch.zeros_like(latent_target))
         history = _load_history_rgbs(
             row.get("keyframe_rgb_paths") or [],
             self.max_keyframes,
@@ -65,13 +69,23 @@ class V0ActionDataset(Dataset):
             "milestone_text": row["milestone_text"],
             "completion": torch.tensor(float(row["completion"]), dtype=torch.float32),
             "recent_progress_flag": torch.tensor(float(row["recent_progress_flag"]), dtype=torch.float32),
-            "prev_latent": torch.zeros_like(latent_target),
+            "prev_latent": prev_latent.float(),
             "action_id": torch.tensor(action_id, dtype=torch.long),
             "progress_label": torch.tensor(float(label["progress"]), dtype=torch.float32),
             "cost_label": torch.tensor(float(label["cost"]), dtype=torch.float32),
             "latent_target": latent_target.float(),
             "prior": torch.tensor(float(self.prior.get(sample_id, {}).get(str(action_id), 0.0)), dtype=torch.float32),
         }
+
+    def _build_prev_latent_index(self) -> Dict[str, str]:
+        prev_index: Dict[str, str] = {}
+        for sample_id, row in self.windows.items():
+            prev_sample_id = row.get("prev_sample_id")
+            if not prev_sample_id and int(row.get("t", 0)) > 0:
+                prev_sample_id = f"{row.get('instruction_id', '')}_{int(row['t']) - 1}"
+            if prev_sample_id in self.latents:
+                prev_index[sample_id] = self.latents[prev_sample_id]
+        return prev_index
 
 
 def collate_v0(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -98,6 +112,17 @@ def _load_latent_index(path: str | None) -> Dict[str, str]:
     if not path or not Path(path).exists():
         return {}
     return {row["sample_id"]: row["latent_target"] for row in read_jsonl(path)}
+
+
+def _load_latent(path: str | None, fallback: torch.Tensor | None = None, latent_dim: int = 512) -> torch.Tensor:
+    if path:
+        try:
+            return torch.load(path, map_location="cpu").float()
+        except Exception:
+            pass
+    if fallback is not None:
+        return fallback.float()
+    return torch.zeros(latent_dim, dtype=torch.float32)
 
 
 def _resolve_image_path(path: str | None, image_root: Path | None) -> Path | None:

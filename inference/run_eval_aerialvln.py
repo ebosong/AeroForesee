@@ -27,6 +27,7 @@ def parse_v0_args() -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--gpu-ids", default=None, help="Comma-separated physical GPU ids exposed to the V0 planner process, e.g. 0 or 0,1.")
     parser.add_argument("--eval-output", default="DATA/v0/eval/results.json")
     parser.add_argument("--diagnostics-dir", default="DATA/v0/diagnostics/eval_aerialvln")
+    parser.add_argument("--instruction-plan", default="data/instruction_plan.jsonl")
     parser.add_argument("--stop-completion-threshold", type=float, default=0.35)
     parser.add_argument("--score-preview-steps", type=int, default=5)
     args, unknown = parser.parse_known_args()
@@ -48,6 +49,7 @@ def main() -> None:
     from models.state_builder import MilestoneAwareStateBuilder
     from models.vlm_clients import build_vlm_client
     from inference.planner_loop import V0PlannerLoop
+    from preprocess.common import read_jsonl
     from utils.diagnostics import append_jsonl, ensure_dir, print_event, save_bar_png, write_json
 
     old_args.ablate_depth = True
@@ -98,6 +100,9 @@ def main() -> None:
     )
 
     env = AirVLNENV(batch_size=old_args.batchSize, split=old_args.EVAL_DATASET, tokenizer=None)
+    plans_loaded, plans_merged = _merge_instruction_plans(env.data, v0_args.instruction_plan, read_jsonl)
+    if plans_loaded:
+        print_event("run_eval_aerialvln", "instruction_plans_merged", loaded=plans_loaded, merged=plans_merged, path=v0_args.instruction_plan)
     stats_episodes = {}
     print_event(
         "run_eval_aerialvln",
@@ -151,6 +156,8 @@ def main() -> None:
             "episodes": len(stats_episodes),
             "output": str(output),
             "summary": summary,
+            "instruction_plans_loaded": plans_loaded,
+            "instruction_plans_merged": plans_merged,
             "device": str(device),
             "gpu_ids": device_selection.gpu_ids,
             "cuda_visible_devices": device_selection.cuda_visible_devices,
@@ -183,6 +190,23 @@ def _to_jsonable(value: Any) -> Any:
     if isinstance(value, np.generic):
         return value.item()
     return value
+
+
+def _merge_instruction_plans(data: list[dict], path: str, read_jsonl_fn: Any) -> tuple[int, int]:
+    plan_path = Path(path)
+    if not path or not plan_path.exists():
+        return 0, 0
+    plans = {str(row.get("instruction_id")): row for row in read_jsonl_fn(plan_path)}
+    merged = 0
+    for item in data:
+        keys = [str(item.get("episode_id", "")), str(item.get("trajectory_id", ""))]
+        plan = next((plans[key] for key in keys if key in plans), None)
+        if not plan:
+            continue
+        item["instruction_plan"] = plan
+        item["milestones"] = plan.get("milestones", [])
+        merged += 1
+    return len(plans), merged
 
 
 if __name__ == "__main__":
