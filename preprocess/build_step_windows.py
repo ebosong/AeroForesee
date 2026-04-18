@@ -71,6 +71,8 @@ def build(args: argparse.Namespace) -> None:
                 action_history.insert(0, 0)
                 deltas.insert(0, [0.0, 0.0, 0.0, 0.0])
             keyframes = select_keyframe_indices(t, actions, milestone_ids, progress_values, args.max_keyframes, args.keyframe_interval)
+            rgb_path = _path_at(episode, ["rgb_paths", "image_paths", "images", "frames"], t)
+            next_rgb_path = _path_at(episode, ["rgb_paths", "image_paths", "images", "frames"], t + 1)
             rows.append({
                 "sample_id": f"{item_id}_{t}",
                 "episode_id": episode.get("episode_id"),
@@ -88,6 +90,12 @@ def build(args: argparse.Namespace) -> None:
                 "action_history": action_history[-args.history_len:],
                 "pose_deltas": deltas[-args.history_len:],
                 "keyframe_indices": keyframes,
+                "rgb_path": rgb_path,
+                "next_rgb_path": next_rgb_path,
+                "keyframe_rgb_paths": [
+                    path for path in (_path_at(episode, ["rgb_paths", "image_paths", "images", "frames"], idx) for idx in keyframes)
+                    if path
+                ],
                 "legal_action_ids": list(range(8)),
                 "reference_position": ref_path[t][0:3] if ref_path and t < len(ref_path) else None,
                 "next_reference_position": ref_path[t + 1][0:3] if ref_path and t + 1 < len(ref_path) else None,
@@ -111,6 +119,18 @@ def main() -> None:
     parser.add_argument("--keyframe-interval", type=int, default=4)
     parser.add_argument("--diagnostics-dir", default="DATA/v0/diagnostics/build_step_windows")
     build(parser.parse_args())
+
+
+def _path_at(episode: Dict[str, Any], keys: List[str], index: int) -> str | None:
+    for key in keys:
+        values = episode.get(key)
+        if isinstance(values, list) and 0 <= index < len(values):
+            value = values[index]
+            if isinstance(value, dict):
+                value = value.get("path") or value.get("rgb") or value.get("image")
+            if value:
+                return str(value)
+    return None
 
 
 if __name__ == "__main__":

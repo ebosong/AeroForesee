@@ -35,6 +35,7 @@ def train(args: argparse.Namespace) -> None:
         image_height=image_h,
         image_width=image_w,
         max_keyframes=int(model_cfg["history"]["max_keyframes"]),
+        image_root=args.image_root,
     )
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=collate_v0)
     print_event("train_action_evaluator", "dataset_loaded", samples=len(dataset), batches=len(loader), device=device)
@@ -149,6 +150,7 @@ def main() -> None:
     parser.add_argument("--rollout-labels", required=True)
     parser.add_argument("--action-prior-cache")
     parser.add_argument("--latent-index")
+    parser.add_argument("--image-root")
     parser.add_argument("--model-config", default="configs/model.yaml")
     parser.add_argument("--output-dir", default="DATA/v0/checkpoints/action_evaluator")
     parser.add_argument("--device", default="cuda")

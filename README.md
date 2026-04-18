@@ -213,7 +213,9 @@ python preprocess/build_rollout_labels.py ^
 python preprocess/build_latent_targets.py ^
   --step-windows data/step_windows/train.jsonl ^
   --output-dir data/latent_targets/train ^
-  --index-output data/latent_targets/train_index.jsonl
+  --index-output data/latent_targets/train_index.jsonl ^
+  --model-config configs/model.yaml ^
+  --image-root ../DATA/data/aerialvln-s
 ```
 
 没有 Qwen VLM 时，可以先用 `uniform` 跑通；正式实验再切到 `qwen_api` 或 `qwen_local`。
@@ -226,6 +228,7 @@ python training/train_action_evaluator.py ^
   --rollout-labels data/rollout_labels/train.jsonl ^
   --action-prior-cache data/action_prior_cache/train.jsonl ^
   --latent-index data/latent_targets/train_index.jsonl ^
+  --image-root ../DATA/data/aerialvln-s ^
   --output-dir DATA/v0/checkpoints/action_evaluator ^
   --epochs 10
 ```
@@ -374,6 +377,7 @@ fallback:
 | 历史关键帧规则 | `models/history_encoder.py`, `preprocess/build_step_windows.py` | 固定间隔、milestone 切换、连续转向、连续无进展规则均落成 `select_keyframe_indices` |
 | VLM-Based Action Prior | `models/action_space.py`, `models/action_prior.py`, `prompts/action_prior_prompt.txt`, `preprocess/build_action_prior_cache.py` | 官方动作集合打分、非法动作过滤、分数归一化、低 completion 抑制 STOP、训练缓存 |
 | Causal Latent Action Evaluator | `models/action_encoder.py`, `models/causal_latent_action_evaluator.py`, `preprocess/build_rollout_labels.py`, `preprocess/build_latent_targets.py`, `training/train_action_evaluator.py` | action token + causal Transformer，输出 progress/cost/next_latent，三项 loss 训练 |
+| 一步 future latent 监督 | `preprocess/build_latent_targets.py`, `training/v0_dataset.py` | step-window 存 `next_rgb_path` 时用视觉骨干编码下一帧；缺失离线图像时用零向量 fallback 并在 summary 记录 |
 | Step-wise Decision and Execution | `models/action_mask.py`, `models/decision_fuser.py`, `models/fallback.py`, `inference/planner_loop.py` | 合法动作过滤，手工权重融合，低进展/重复转向/低分 fallback，单步执行并更新 latent |
 | AirVLN 仿真闭环与指标 | `inference/run_eval_aerialvln.py`, `src/vlnce_src/env.py` | `reset -> act -> makeActions -> get_obs -> update_measurements`，输出 success/nDTW/sDTW/path_length/oracle_success/steps |
 | 日志和可视化 | `utils/diagnostics.py` 和各阶段脚本 | 阶段日志、JSON/JSONL 诊断、PNG-only 可视化 |
@@ -457,6 +461,8 @@ V0 按项目文件要求不实现 uncertainty、alignment head、OpenFly transfe
 | `--keyframe-interval` | `4` | 固定关键帧间隔 |
 | `--diagnostics-dir` | `DATA/v0/diagnostics/build_step_windows` | 诊断目录 |
 
+输出的每条 step-window 会尽量包含 `rgb_path`、`next_rgb_path`、`keyframe_rgb_paths`。如果原始 dataset JSON 没有 `rgb_paths/image_paths/images/frames` 这类字段，后续训练和 latent target 构造会自动使用零图像/零 latent fallback，并在诊断 summary 里体现。
+
 `preprocess/build_action_prior_cache.py`
 
 | 参数 | 默认值 | 作用 |
@@ -483,7 +489,10 @@ V0 按项目文件要求不实现 uncertainty、alignment head、OpenFly transfe
 | `--step-windows` | 必填 | step-window 输入 |
 | `--output-dir` | `data/latent_targets/train` | latent target `.pt` 输出目录 |
 | `--index-output` | `data/latent_targets/train_index.jsonl` | latent target 索引 |
-| `--token-dim` | `512` | latent target 维度，应等于 `model.hidden_dim` |
+| `--model-config` | `configs/model.yaml` | 读取视觉骨干、图像尺寸和 hidden dim |
+| `--image-root` | 空 | 解析相对图像路径的根目录 |
+| `--device` | `cuda` | 编码下一帧图像的设备，CUDA 不可用会回退 CPU |
+| `--token-dim` | 空 | 覆盖 latent target 维度；默认使用 `model.hidden_dim` |
 | `--preview-count` | `10` | 预览日志数量 |
 | `--diagnostics-dir` | `DATA/v0/diagnostics/build_latent_targets` | 诊断目录 |
 
@@ -495,6 +504,7 @@ V0 按项目文件要求不实现 uncertainty、alignment head、OpenFly transfe
 | `--rollout-labels` | 必填 | progress/cost labels |
 | `--action-prior-cache` | 空 | action prior 缓存 |
 | `--latent-index` | 空 | latent target 索引 |
+| `--image-root` | 空 | 解析 `rgb_path/keyframe_rgb_paths` 的根目录 |
 | `--model-config` | `configs/model.yaml` | 模型配置 |
 | `--output-dir` | `DATA/v0/checkpoints/action_evaluator` | checkpoint 输出目录 |
 | `--device` | `cuda` | 训练设备，CUDA 不可用会回退 CPU |

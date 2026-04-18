@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List
 
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 
@@ -19,6 +20,7 @@ class V0ActionDataset(Dataset):
         image_height: int = 224,
         image_width: int = 224,
         max_keyframes: int = 8,
+        image_root: str | None = None,
     ) -> None:
         self.windows = {row["sample_id"]: row for row in read_jsonl(step_windows)}
         label_rows = {row["sample_id"]: row["labels"] for row in read_jsonl(rollout_labels)}
@@ -34,6 +36,7 @@ class V0ActionDataset(Dataset):
         self.image_height = image_height
         self.image_width = image_width
         self.max_keyframes = max_keyframes
+        self.image_root = Path(image_root) if image_root else None
 
     def __len__(self) -> int:
         return len(self.items)
@@ -44,10 +47,17 @@ class V0ActionDataset(Dataset):
         label = self.labels[sample_id][str(action_id)]
         latent_path = self.latents.get(sample_id)
         latent_target = torch.load(latent_path, map_location="cpu") if latent_path else torch.zeros(512)
+        history = _load_history_rgbs(
+            row.get("keyframe_rgb_paths") or [],
+            self.max_keyframes,
+            self.image_height,
+            self.image_width,
+            self.image_root,
+        )
         return {
             "sample_id": sample_id,
-            "current_rgb": torch.zeros(self.image_height, self.image_width, 3, dtype=torch.float32),
-            "history_rgbs": torch.zeros(self.max_keyframes, self.image_height, self.image_width, 3, dtype=torch.float32),
+            "current_rgb": _load_rgb(row.get("rgb_path"), self.image_height, self.image_width, self.image_root),
+            "history_rgbs": history,
             "action_history": torch.tensor(row["action_history"], dtype=torch.long),
             "pose_deltas": torch.tensor(row["pose_deltas"], dtype=torch.float32),
             "fallback_flags": torch.zeros(len(row["action_history"]), dtype=torch.float32),
@@ -88,4 +98,33 @@ def _load_latent_index(path: str | None) -> Dict[str, str]:
     if not path or not Path(path).exists():
         return {}
     return {row["sample_id"]: row["latent_target"] for row in read_jsonl(path)}
+
+
+def _resolve_image_path(path: str | None, image_root: Path | None) -> Path | None:
+    if not path:
+        return None
+    candidate = Path(path)
+    if not candidate.is_absolute() and image_root is not None:
+        candidate = image_root / candidate
+    return candidate if candidate.exists() else None
+
+
+def _load_rgb(path: str | None, height: int, width: int, image_root: Path | None) -> torch.Tensor:
+    resolved = _resolve_image_path(path, image_root)
+    if resolved is None:
+        return torch.zeros(height, width, 3, dtype=torch.float32)
+    try:
+        from PIL import Image
+
+        image = Image.open(resolved).convert("RGB").resize((width, height))
+        return torch.tensor(np.asarray(image), dtype=torch.float32)
+    except Exception:
+        return torch.zeros(height, width, 3, dtype=torch.float32)
+
+
+def _load_history_rgbs(paths: List[str], max_keyframes: int, height: int, width: int, image_root: Path | None) -> torch.Tensor:
+    frames = [_load_rgb(path, height, width, image_root) for path in paths[-max_keyframes:]]
+    while len(frames) < max_keyframes:
+        frames.insert(0, torch.zeros(height, width, 3, dtype=torch.float32))
+    return torch.stack(frames[-max_keyframes:], dim=0)
 

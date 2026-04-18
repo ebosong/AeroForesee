@@ -8,7 +8,7 @@ import numpy as np
 
 
 def read_json(path: str | Path) -> Any:
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:
         return json.load(f)
 
 
@@ -21,7 +21,7 @@ def write_jsonl(path: str | Path, rows: Iterable[Dict[str, Any]]) -> None:
 
 
 def read_jsonl(path: str | Path) -> Iterator[Dict[str, Any]]:
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:
         for line in f:
             line = line.strip()
             if line:
