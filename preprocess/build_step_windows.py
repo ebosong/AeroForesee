@@ -107,6 +107,9 @@ def build(args: argparse.Namespace) -> None:
                     if path
                 ],
                 "legal_action_ids": list(range(8)),
+                "reference_pose": ref_path[t] if ref_path and t < len(ref_path) else None,
+                "next_reference_pose": ref_path[t + 1] if ref_path and t + 1 < len(ref_path) else None,
+                "prev_reference_pose": ref_path[t - 1] if ref_path and t > 0 else None,
                 "reference_position": ref_path[t][0:3] if ref_path and t < len(ref_path) else None,
                 "next_reference_position": ref_path[t + 1][0:3] if ref_path and t + 1 < len(ref_path) else None,
             })

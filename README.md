@@ -360,6 +360,8 @@ python preprocess/build_rollout_labels.py ^
   --output data/rollout_labels/train.jsonl
 ```
 
+如果 step-window 里有 `reference_pose/next_reference_pose`，label 构造会用 AirSim 官方动作尺度做一阶 local world-model：对每个候选动作模拟下一 pose，再按 reference segment 的 completion 增量、到下一参考点的偏离、反向/绕路代价生成 progress/cost。缺少 reference pose 时才回退到启发式 consequence label。`summary.json` 里的 `geometric_action_labels` 和 `heuristic_action_labels` 用来检查实际覆盖率。
+
 结果：
 
 ```text
@@ -488,6 +490,8 @@ DATA/v0/diagnostics/eval_aerialvln/planner_loop/episode_*_step_*_scores.png
 ```text
 --run_type eval --ablate_depth
 ```
+
+在线 planner 里 milestone 不再只由 env progress 映射。`MilestoneProgressController` 会维护每个 episode 的当前 milestone 和 completion，并用 VLM action prior 的 STOP 证据、已选动作、evaluator progress gain 以及可用的全局 progress 来推进 milestone；`step_decisions.jsonl` 会同时记录当前和更新后的 milestone 状态。
 
 ## 8. 参数说明
 
