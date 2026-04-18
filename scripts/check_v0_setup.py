@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import socket
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,7 @@ def main() -> None:
     parser.add_argument("--fuser-config", default="configs/fuser.yaml")
     parser.add_argument("--eval-split", default="val_unseen")
     parser.add_argument("--port", type=int, default=30000)
+    parser.add_argument("--gpu-ids", default=None, help="Optional comma-separated GPU ids to validate, e.g. 0 or 0,1.")
     parser.add_argument("--strict", action="store_true", help="Exit non-zero when any warning is found.")
     args = parser.parse_args()
 
@@ -24,6 +27,7 @@ def main() -> None:
     workspace_root = Path(args.workspace_root).resolve() if args.workspace_root else project_dir.parent.resolve()
     data_dir = workspace_root / "DATA"
     envs_dir = workspace_root / "ENVs"
+    gpu_ids = _parse_gpu_ids(args.gpu_ids)
     failures: list[str] = []
     warnings: list[str] = []
 
@@ -70,9 +74,13 @@ def main() -> None:
     else:
         warnings.append(f"Port {args.port} is not open yet. Start airsim_plugin/AirVLNSimulatorServerTool.py before full eval.")
 
+    if gpu_ids:
+        _check_gpu_ids(gpu_ids, warnings)
+
     print("\n[V0 setup check]")
     print(f"project_dir={project_dir}")
     print(f"workspace_root={workspace_root}")
+    print(f"gpu_ids={','.join(gpu_ids) if gpu_ids else 'not specified'}")
     for warning in warnings:
         print(f"[WARN] {warning}")
     if failures:
@@ -120,6 +128,44 @@ def _port_open(host: str, port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.25)
         return sock.connect_ex((host, int(port))) == 0
+
+
+def _parse_gpu_ids(value: str | None) -> list[str]:
+    if not value:
+        return []
+    gpu_ids: list[str] = []
+    for item in str(value).split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if not item.isdigit():
+            raise SystemExit(f"Invalid --gpu-ids value '{item}'. Use comma-separated integer ids like 0,1.")
+        gpu_ids.append(item)
+    return gpu_ids
+
+
+def _check_gpu_ids(gpu_ids: list[str], warnings: list[str]) -> None:
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        warnings.append("nvidia-smi was not found, so GPU ids could not be validated on this machine.")
+        return
+    try:
+        result = subprocess.run(
+            [nvidia_smi, "--query-gpu=index,name,memory.total", "--format=csv,noheader"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        warnings.append(f"Could not query GPUs with nvidia-smi: {exc}")
+        return
+    available = {line.split(",", 1)[0].strip() for line in result.stdout.splitlines() if line.strip()}
+    missing = [gpu_id for gpu_id in gpu_ids if gpu_id not in available]
+    if missing:
+        warnings.append(f"Requested GPU ids are not reported by nvidia-smi: {','.join(missing)}. Available ids: {','.join(sorted(available)) or 'none'}.")
+    else:
+        warnings.append(f"Requested GPU ids are visible to nvidia-smi: {','.join(gpu_ids)}.")
 
 
 if __name__ == "__main__":

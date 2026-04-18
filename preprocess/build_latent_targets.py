@@ -12,6 +12,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from models.vision_backbone import VisionBackbone
 from preprocess.common import read_jsonl, write_jsonl
+from utils.device import select_torch_device
 from utils.diagnostics import ensure_dir, print_event, write_json
 
 
@@ -25,7 +26,8 @@ def build(args: argparse.Namespace) -> None:
     token_dim = int(args.token_dim or cfg["model"]["hidden_dim"])
     image_h = int(cfg["vision"]["image_height"])
     image_w = int(cfg["vision"]["image_width"])
-    device = torch.device(args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu")
+    device_selection = select_torch_device(args.device, args.gpu_ids)
+    device = device_selection.device
     encoder = VisionBackbone(
         token_dim=token_dim,
         backbone=str(cfg["vision"].get("backbone", "dinov2_s")),
@@ -38,7 +40,16 @@ def build(args: argparse.Namespace) -> None:
     encoded = 0
     missing = 0
     image_root = Path(args.image_root) if args.image_root else None
-    print_event("build_latent_targets", "start", windows=len(windows), token_dim=token_dim, device=device)
+    print_event(
+        "build_latent_targets",
+        "start",
+        windows=len(windows),
+        token_dim=token_dim,
+        device=str(device),
+        gpu_ids=",".join(device_selection.gpu_ids) or "all",
+        cuda_visible_devices=device_selection.cuda_visible_devices or "",
+        device_note=device_selection.note,
+    )
     for idx, row in enumerate(windows):
         image = _load_rgb(row.get("next_rgb_path"), image_h, image_w, image_root)
         if image is None:
@@ -54,7 +65,7 @@ def build(args: argparse.Namespace) -> None:
         if idx < args.preview_count:
             print_event("build_latent_targets", "preview", sample_id=row["sample_id"], target=str(target_path), encoded=bool(image is not None))
     write_jsonl(args.index_output, index_rows)
-    write_json(diag_dir / "summary.json", {"step_windows": len(windows), "latent_targets": len(index_rows), "token_dim": token_dim, "encoded_from_images": encoded, "missing_images_zero_fallback": missing})
+    write_json(diag_dir / "summary.json", {"step_windows": len(windows), "latent_targets": len(index_rows), "token_dim": token_dim, "encoded_from_images": encoded, "missing_images_zero_fallback": missing, "device": str(device), "gpu_ids": device_selection.gpu_ids, "cuda_visible_devices": device_selection.cuda_visible_devices, "device_note": device_selection.note})
     print_event("build_latent_targets", "done", latent_targets=len(index_rows), encoded=encoded, missing_images=missing, diagnostics=str(diag_dir))
 
 
@@ -66,6 +77,7 @@ def main() -> None:
     parser.add_argument("--model-config", default="configs/model.yaml")
     parser.add_argument("--image-root")
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--gpu-ids", default=None, help="Comma-separated physical GPU ids exposed to this process, e.g. 0 or 0,1.")
     parser.add_argument("--token-dim", type=int)
     parser.add_argument("--diagnostics-dir", default="DATA/v0/diagnostics/build_latent_targets")
     parser.add_argument("--preview-count", type=int, default=10)

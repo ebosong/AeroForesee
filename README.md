@@ -111,6 +111,30 @@ pip install pytorch-transformers==1.2.0
 - 如果只做 CPU smoke test，可安装 CPU 版 PyTorch，但完整 AirSim eval 建议使用 Nvidia GPU。
 - Windows/PowerShell 生成的 JSONL 可能带 BOM，代码已兼容 `utf-8-sig`。
 
+### 3.1 GPU/CUDA 设备选择
+
+所有会使用 PyTorch CUDA 的 V0 脚本都支持：
+
+```text
+--device cuda 或 --device cuda:0 或 --device cpu
+--gpu-ids 0 或 --gpu-ids 0,1
+```
+
+含义：
+
+- `--gpu-ids` 是物理显卡编号，代码会在进程内设置 `CUDA_VISIBLE_DEVICES`，限制这个脚本只能看到指定显卡。
+- `--device cuda` 会使用可见 GPU 列表中的第一张卡；如果同时传 `--gpu-ids 2,3`，实际 PyTorch 设备会显示为 `cuda:0`，对应物理 GPU 2。
+- `--device cuda:1` 表示使用当前可见 GPU 列表中的第二张卡；如果没有传 `--gpu-ids`，它对应系统物理 GPU 1。
+- 如果机器没有可用 CUDA，脚本会自动 fallback 到 CPU，并在日志和 `summary.json` 里写出 `device_note=cuda_unavailable_fallback_cpu`。
+- AirSim/ENVs 渲染进程使用 `airsim_plugin/AirVLNSimulatorServerTool.py --gpus 0,1` 或等价的 `--gpu-ids 0,1` 指定渲染显卡。
+
+检查显卡编号：
+
+```bash
+nvidia-smi
+python scripts/check_v0_setup.py --gpu-ids 0,1 --port 30000
+```
+
 ## 4. 视觉骨干放置
 
 `configs/model.yaml` 默认使用 DINOv2-S：
@@ -351,7 +375,8 @@ python preprocess/build_latent_targets.py ^
   --index-output data/latent_targets/train_index.jsonl ^
   --model-config configs/model.yaml ^
   --image-root ../DATA/data/aerialvln-s ^
-  --device cuda
+  --device cuda ^
+  --gpu-ids 0
 ```
 
 结果：
@@ -383,6 +408,7 @@ python training/train_action_evaluator.py ^
   --model-config configs/model.yaml ^
   --output-dir DATA/v0/checkpoints/action_evaluator ^
   --device cuda ^
+  --gpu-ids 0 ^
   --batch-size 16 ^
   --epochs 10 ^
   --lr 0.00025
@@ -407,6 +433,8 @@ cd AirVLN_ws/AeroForesee
 python airsim_plugin/AirVLNSimulatorServerTool.py --gpus 0 --port 30000
 ```
 
+多张渲染卡可以写成 `--gpus 0,1`，场景会按顺序轮询分配到这些显卡；`--gpu-ids 0,1` 是同义参数。
+
 检查：
 
 ```bash
@@ -426,6 +454,7 @@ python inference/run_eval_aerialvln.py ^
   --diagnostics-dir DATA/v0/diagnostics/eval_aerialvln ^
   --vlm-client qwen_api ^
   --device cuda ^
+  --gpu-ids 0 ^
   --score-preview-steps 5 ^
   --stop-completion-threshold 0.35 ^
   --batchSize 1 ^
@@ -455,7 +484,19 @@ DATA/v0/diagnostics/eval_aerialvln/planner_loop/episode_*_step_*_scores.png
 
 ## 8. 参数说明
 
-### 8.1 `configs/model.yaml`
+### 8.1 `configs/base.yaml`
+
+| 参数 | 默认值 | 作用 | 常见修改 |
+| --- | --- | --- | --- |
+| `workspace_root` | `..` | 工作区根目录，对你的结构就是 `AirVLN_ws` | 目录变化时改 |
+| `dataset_root` | `../DATA/data` | 数据集根目录 | 数据不在相邻 `DATA` 时改 |
+| `envs_root` | `../ENVs` | AirSim 环境根目录 | 环境不在相邻 `ENVs` 时改 |
+| `output_root` | `DATA/v0` | V0 日志、结果和 checkpoint 输出根目录 | 多实验可改成 `DATA/v0_exp_x` |
+| `device` | `cuda` | 默认 PyTorch 设备 | CPU smoke test 改成 `cpu` |
+| `gpu_ids` | `null` | 默认 GPU 可见列表；命令行 `--gpu-ids` 优先生效 | 固定机器可写 `0` 或 `0,1` |
+| `num_workers` | `0` | DataLoader worker 数 | Linux 可增大，Windows 建议从 0 开始 |
+
+### 8.2 `configs/model.yaml`
 
 | 参数 | 默认值 | 作用 | 常见修改 |
 | --- | --- | --- | --- |
@@ -480,7 +521,7 @@ DATA/v0/diagnostics/eval_aerialvln/planner_loop/episode_*_step_*_scores.png
 | `training.lr` | `0.00025` | 学习率 | loss 震荡时降低 |
 | `training.*_loss_weight` | `1.0` | 三类 loss 权重 | 按训练曲线调整 |
 
-### 8.2 `configs/fuser.yaml`
+### 8.3 `configs/fuser.yaml`
 
 | 参数 | 默认值 | 作用 |
 | --- | --- | --- |
@@ -493,7 +534,7 @@ DATA/v0/diagnostics/eval_aerialvln/planner_loop/episode_*_step_*_scores.png
 | `fallback.repeated_turn_patience` | `2` | 连续转向步数 |
 | `fallback.conservative_actions` | `MOVE_FORWARD, STOP` | fallback 优先动作 |
 
-### 8.3 常用脚本参数
+### 8.4 常用脚本参数
 
 | 脚本 | 关键参数 |
 | --- | --- |
@@ -501,11 +542,12 @@ DATA/v0/diagnostics/eval_aerialvln/planner_loop/episode_*_step_*_scores.png
 | `build_step_windows.py` | `--dataset-json`, `--instruction-plan`, `--history-len`, `--max-keyframes`, `--keyframe-interval` |
 | `build_action_prior_cache.py` | `--step-windows`, `--output`, `--client`, `--preview-count` |
 | `build_rollout_labels.py` | `--step-windows`, `--output` |
-| `build_latent_targets.py` | `--step-windows`, `--model-config`, `--image-root`, `--device`, `--token-dim` |
-| `train_action_evaluator.py` | `--step-windows`, `--rollout-labels`, `--action-prior-cache`, `--latent-index`, `--image-root`, `--batch-size`, `--epochs`, `--lr` |
-| `run_eval_aerialvln.py` | `--v0-checkpoint`, `--vlm-client`, `--score-preview-steps`, `--stop-completion-threshold`, `--batchSize`, `--EVAL_DATASET`, `--EVAL_NUM`, `--maxAction`, `--simulator_tool_port` |
+| `build_latent_targets.py` | `--step-windows`, `--model-config`, `--image-root`, `--device`, `--gpu-ids`, `--token-dim` |
+| `train_action_evaluator.py` | `--step-windows`, `--rollout-labels`, `--action-prior-cache`, `--latent-index`, `--image-root`, `--device`, `--gpu-ids`, `--batch-size`, `--epochs`, `--lr` |
+| `run_eval_aerialvln.py` | `--v0-checkpoint`, `--vlm-client`, `--device`, `--gpu-ids`, `--score-preview-steps`, `--stop-completion-threshold`, `--batchSize`, `--EVAL_DATASET`, `--EVAL_NUM`, `--maxAction`, `--simulator_tool_port` |
+| `AirVLNSimulatorServerTool.py` | `--gpus`/`--gpu-ids`, `--port` |
 
-### 8.4 原 AirVLN 透传参数
+### 8.5 原 AirVLN 透传参数
 
 `run_eval_aerialvln.py` 会把未知参数透传给 `src/common/param.py`。常用：
 
@@ -540,6 +582,8 @@ DATA/v0/diagnostics/eval_aerialvln/planner_loop/episode_*_step_*_scores.png
 | 路径很长 | `average_cost_by_action.png` | 提高 `w_cost` |
 | loss 不降 | `loss_curve.png`, label 分布 | 降低 `lr`，检查 `rollout_labels` 和 latent target |
 | `encoded_from_images=0` | `build_latent_targets/summary.json` | 检查 step-window 是否有图像路径和 `--image-root` |
+| CUDA OOM | 终端日志、`summary.json` 里的 `device/gpu_ids` | 降低 `--batch-size`、`history.max_keyframes` 或 `model.hidden_dim`，也可换 `--gpu-ids` 到空闲显卡 |
+| 用错显卡 | `summary.json` 里的 `cuda_visible_devices` | 显式传 `--gpu-ids 0` 或 `--gpu-ids 0,1`；AirSim server 也同步改 `--gpus` |
 
 ## 10. 日志、结果和可视化
 
@@ -577,6 +621,15 @@ DATA/v0/diagnostics/train_action_evaluator/training_log.jsonl
 DATA/v0/diagnostics/eval_aerialvln/eval_steps.jsonl
 DATA/v0/diagnostics/eval_aerialvln/planner_loop/step_decisions.jsonl
 DATA/v0/eval/*.json
+```
+
+其中 `build_latent_targets`、`train_action_evaluator` 和 `eval_aerialvln` 的 `summary.json` 会记录：
+
+```text
+device
+gpu_ids
+cuda_visible_devices
+device_note
 ```
 
 最终 eval output 格式：
@@ -663,6 +716,24 @@ python airsim_plugin/AirVLNSimulatorServerTool.py --gpus 0 --port 30000
 ```bash
 python scripts/check_v0_setup.py --port 30000
 ```
+
+### GPU 检查
+
+```bash
+nvidia-smi
+python scripts/check_v0_setup.py --gpu-ids 0,1 --port 30000
+```
+
+PyTorch 阶段和 AirSim 阶段需要分别指定 GPU：
+
+```bash
+python preprocess/build_latent_targets.py ... --device cuda --gpu-ids 0
+python training/train_action_evaluator.py ... --device cuda --gpu-ids 0
+python inference/run_eval_aerialvln.py ... --device cuda --gpu-ids 0 --simulator_tool_port 30000
+python airsim_plugin/AirVLNSimulatorServerTool.py --gpus 0,1 --port 30000
+```
+
+如果 `summary.json` 里 `device` 变成 `cpu`，说明当前 Python 环境没有可用 CUDA 或 PyTorch CUDA 版本不匹配。先用 `python -c "import torch; print(torch.cuda.is_available(), torch.cuda.device_count())"` 检查。
 
 ### 端口冲突
 

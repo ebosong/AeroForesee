@@ -6,5 +6,6 @@ output_root: DATA/v0
 envs_root: ../ENVs
 seed: 100
 device: cuda
+gpu_ids: null
 num_workers: 0
 

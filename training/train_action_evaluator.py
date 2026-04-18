@@ -15,6 +15,7 @@ from models.action_space import AirVLNActionSpace
 from models.causal_latent_action_evaluator import CausalLatentActionEvaluator
 from models.state_builder import MilestoneAwareStateBuilder
 from training.v0_dataset import V0ActionDataset, collate_v0
+from utils.device import select_torch_device
 from utils.diagnostics import append_jsonl, ensure_dir, print_event, save_line_png, write_json
 
 
@@ -25,7 +26,8 @@ def train(args: argparse.Namespace) -> None:
     image_h = int(model_cfg["vision"]["image_height"])
     image_w = int(model_cfg["vision"]["image_width"])
     action_space = AirVLNActionSpace()
-    device = torch.device(args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu")
+    device_selection = select_torch_device(args.device, args.gpu_ids)
+    device = device_selection.device
 
     dataset = V0ActionDataset(
         step_windows=args.step_windows,
@@ -38,7 +40,16 @@ def train(args: argparse.Namespace) -> None:
         image_root=args.image_root,
     )
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=collate_v0)
-    print_event("train_action_evaluator", "dataset_loaded", samples=len(dataset), batches=len(loader), device=device)
+    print_event(
+        "train_action_evaluator",
+        "dataset_loaded",
+        samples=len(dataset),
+        batches=len(loader),
+        device=str(device),
+        gpu_ids=",".join(device_selection.gpu_ids) or "all",
+        cuda_visible_devices=device_selection.cuda_visible_devices or "",
+        device_note=device_selection.note,
+    )
 
     state_builder = MilestoneAwareStateBuilder(
         token_dim=token_dim,
@@ -133,7 +144,18 @@ def train(args: argparse.Namespace) -> None:
         },
         output_dir / "ckpt_last.pth",
     )
-    write_json(diag_dir / "summary.json", {"epochs": args.epochs, "samples": len(dataset), "final_loss": loss_curve[-1] if loss_curve else None})
+    write_json(
+        diag_dir / "summary.json",
+        {
+            "epochs": args.epochs,
+            "samples": len(dataset),
+            "final_loss": loss_curve[-1] if loss_curve else None,
+            "device": str(device),
+            "gpu_ids": device_selection.gpu_ids,
+            "cuda_visible_devices": device_selection.cuda_visible_devices,
+            "device_note": device_selection.note,
+        },
+    )
     print_event("train_action_evaluator", "done", checkpoint=str(output_dir / "ckpt_last.pth"), diagnostics=str(diag_dir))
 
 
@@ -154,6 +176,7 @@ def main() -> None:
     parser.add_argument("--model-config", default="configs/model.yaml")
     parser.add_argument("--output-dir", default="DATA/v0/checkpoints/action_evaluator")
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--gpu-ids", default=None, help="Comma-separated physical GPU ids exposed to this process, e.g. 0 or 0,1.")
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=0.00025)

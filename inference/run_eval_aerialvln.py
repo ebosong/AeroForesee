@@ -14,6 +14,8 @@ import yaml
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
+from utils.device import select_torch_device
+
 
 def parse_v0_args() -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(add_help=True)
@@ -22,6 +24,7 @@ def parse_v0_args() -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--fuser-config", default="configs/fuser.yaml")
     parser.add_argument("--vlm-client", choices=["uniform", "qwen_api", "qwen_local"], default="uniform")
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--gpu-ids", default=None, help="Comma-separated physical GPU ids exposed to the V0 planner process, e.g. 0 or 0,1.")
     parser.add_argument("--eval-output", default="DATA/v0/eval/results.json")
     parser.add_argument("--diagnostics-dir", default="DATA/v0/diagnostics/eval_aerialvln")
     parser.add_argument("--stop-completion-threshold", type=float, default=0.35)
@@ -32,6 +35,7 @@ def parse_v0_args() -> tuple[argparse.Namespace, list[str]]:
 
 def main() -> None:
     v0_args, airvln_args = parse_v0_args()
+    device_selection = select_torch_device(v0_args.device, v0_args.gpu_ids)
     forced = ["--run_type", "eval", "--ablate_depth"]
     sys.argv = [sys.argv[0]] + airvln_args + forced
 
@@ -48,7 +52,7 @@ def main() -> None:
 
     old_args.ablate_depth = True
     diag_dir = ensure_dir(v0_args.diagnostics_dir)
-    device = torch.device(v0_args.device if torch.cuda.is_available() and v0_args.device == "cuda" else "cpu")
+    device = device_selection.device
     cfg = yaml.safe_load(open(v0_args.model_config, "r", encoding="utf-8"))
     token_dim = int(cfg["model"]["hidden_dim"])
     action_space = AirVLNActionSpace()
@@ -95,7 +99,17 @@ def main() -> None:
 
     env = AirVLNENV(batch_size=old_args.batchSize, split=old_args.EVAL_DATASET, tokenizer=None)
     stats_episodes = {}
-    print_event("run_eval_aerialvln", "start", split=old_args.EVAL_DATASET, batch_size=old_args.batchSize, ablate_depth=old_args.ablate_depth)
+    print_event(
+        "run_eval_aerialvln",
+        "start",
+        split=old_args.EVAL_DATASET,
+        batch_size=old_args.batchSize,
+        ablate_depth=old_args.ablate_depth,
+        device=str(device),
+        gpu_ids=",".join(device_selection.gpu_ids) or "all",
+        cuda_visible_devices=device_selection.cuda_visible_devices or "",
+        device_note=device_selection.note,
+    )
     try:
         for _ in range(0, len(env.data), env.batch_size):
             env.next_minibatch()
@@ -131,7 +145,18 @@ def main() -> None:
     metric_values = {key: value for key, value in summary.items() if key != "num_episodes" and isinstance(value, (int, float))}
     if metric_values:
         save_bar_png(diag_dir / "eval_metrics.png", "Eval mean metrics", metric_values)
-    write_json(diag_dir / "summary.json", {"episodes": len(stats_episodes), "output": str(output), "summary": summary})
+    write_json(
+        diag_dir / "summary.json",
+        {
+            "episodes": len(stats_episodes),
+            "output": str(output),
+            "summary": summary,
+            "device": str(device),
+            "gpu_ids": device_selection.gpu_ids,
+            "cuda_visible_devices": device_selection.cuda_visible_devices,
+            "device_note": device_selection.note,
+        },
+    )
     print_event("run_eval_aerialvln", "done", output=str(output), diagnostics=str(diag_dir))
 
 

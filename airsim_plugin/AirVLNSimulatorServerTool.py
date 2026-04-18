@@ -507,6 +507,13 @@ if __name__ == '__main__':
         "--gpus",
         type=str,
         default='0',
+        help='comma-separated GPU ids used by AirSim scene rendering, e.g. 0 or 0,1'
+    )
+    parser.add_argument(
+        "--gpu-ids",
+        type=str,
+        default=None,
+        help='alias of --gpus for consistency with V0 PyTorch scripts'
     )
     parser.add_argument(
         "--port",
@@ -526,10 +533,16 @@ if __name__ == '__main__':
     assert os.path.exists(str(SEARCH_ENVs_PATH)), 'error'
 
     gpu_list = []
-    gpus = str(args.gpus).split(',')
+    gpus = str(args.gpu_ids if args.gpu_ids is not None else args.gpus).split(',')
     for gpu in gpus:
-        gpu_list.append(int(gpu.strip()))
+        gpu = gpu.strip()
+        if not gpu:
+            continue
+        gpu_list.append(int(gpu))
+    if not gpu_list:
+        raise ValueError("No GPU ids were provided. Use --gpus 0 or --gpu-ids 0,1.")
     GPU_IDS = gpu_list.copy()
+    print(f"AirSim scene GPU ids: {','.join(str(gpu) for gpu in GPU_IDS)}")
 
 
     addr, server, thread = serve()
