@@ -333,11 +333,11 @@ python preprocess/build_action_prior_cache.py ^
 正式 Qwen：
 
 ```bash
-python preprocess/build_action_prior_cache.py ^
-  --step-windows data/step_windows/train.jsonl ^
-  --output data/action_prior_cache/train.jsonl ^
-  --image-root ../DATA/data/aerialvln-s ^
-  --client qwen_api ^
+python preprocess/build_action_prior_cache.py \
+  --step-windows data/step_windows/train.jsonl \
+  --output data/action_prior_cache/train.jsonl \
+  --image-root ../DATA/data/aerialvln-s \
+  --client qwen_api \
   --preview-count 20
 ```
 
