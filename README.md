@@ -111,7 +111,88 @@ pip install pytorch-transformers==1.2.0
 - 如果只做 CPU smoke test，可安装 CPU 版 PyTorch，但完整 AirSim eval 建议使用 Nvidia GPU。
 - Windows/PowerShell 生成的 JSONL 可能带 BOM，代码已兼容 `utf-8-sig`。
 
-### 3.1 GPU/CUDA 设备选择
+### 3.1 本地部署 Checklist
+
+本地部署建议按“代码、Python 环境、数据、场景、模型资源、服务检查”的顺序处理：
+
+```bash
+cd AirVLN_ws/AeroForesee
+git pull --ff-only
+conda activate AeroForesee
+python -m pip install -r requirements.txt
+python -m pip install airsim==1.7.0
+```
+
+如果你的 Git 全局配置把 `https://github.com/` 重写到了镜像站，且镜像证书过期，可以在 Linux shell 中临时忽略全局配置拉取：
+
+```bash
+GIT_CONFIG_GLOBAL=/dev/null git pull --ff-only
+```
+
+数据集放置：
+
+```text
+AirVLN_ws/
+  DATA/
+    data/
+      aerialvln/
+        train.json
+        val_seen.json
+        val_unseen.json
+        test.json
+        train_vocab.txt
+      aerialvln-s/
+        train.json
+        val_seen.json
+        val_unseen.json
+        test.json
+```
+
+仓库提供了两个下载脚本：
+
+```bash
+bash scripts/download_dataset_aerialvln.sh
+bash scripts/download_dataset_aerialvln-s.sh
+```
+
+脚本只是下载 JSON 到当前目录，实际使用前需要把文件移动到上面的 `../DATA/data/aerialvln/` 和 `../DATA/data/aerialvln-s/`。Windows 下可用 Git Bash/WSL，或直接按脚本里的 S3 URL 下载。
+
+AirSim 场景放置：
+
+```text
+AirVLN_ws/
+  ENVs/
+    env_1/
+    env_2/
+    ...
+```
+
+视觉骨干资源：
+
+- 有网环境可以保持 `configs/model.yaml` 默认配置，首次运行时由 `torch.hub` 拉取 DINOv2。
+- 离线环境把 DINOv2 仓库放到 `vision_backbones/dinov2/`，把权重或 Torch Hub cache 放到 `vision_backbones/torch_hub/`。
+- 如果只做 smoke test，可把 `configs/model.yaml` 中 `vision.backbone` 改为 `resnet18` 且 `vision.pretrained` 改为 `false`，减少外部下载依赖。
+
+Qwen 配置：
+
+- 仅跑工程 smoke test 时，`parse_instruction.py --client rule`、`build_action_prior_cache.py --client uniform`、`run_eval_aerialvln.py --vlm-client uniform` 不需要 API key。
+- 正式使用 `qwen_api` 时，需要在 `models/qwen_config.py` 写入 `QWEN_API_KEY`、模型名和 API base URL。
+
+部署后先做检查：
+
+```bash
+python scripts/check_v0_setup.py --eval-split val_unseen --port 30000 --gpu-ids 0
+```
+
+完整在线 eval 还需要启动 simulator server：
+
+```bash
+python airsim_plugin/AirVLNSimulatorServerTool.py --gpus 0 --port 30000
+```
+
+再开另一个终端运行 `run_eval_aerialvln.py`，并保证 `--simulator_tool_port` 与 server 的 `--port` 一致。
+
+### 3.2 GPU/CUDA 设备选择
 
 所有会使用 PyTorch CUDA 的 V0 脚本都支持：
 
@@ -265,21 +346,21 @@ python scripts/check_v0_setup.py --strict
 Smoke test：
 
 ```bash
-python preprocess/parse_instruction.py ^
-  --dataset-json ../DATA/data/aerialvln-s/train.json ^
-  --output data/instruction_plan.jsonl ^
-  --bad-output data/bad_cases.jsonl ^
+python preprocess/parse_instruction.py \
+  --dataset-json ../DATA/data/aerialvln-s/train.json \
+  --output data/instruction_plan.jsonl \
+  --bad-output data/bad_cases.jsonl \
   --client rule
 ```
 
 正式 Qwen：
 
 ```bash
-python preprocess/parse_instruction.py ^
-  --dataset-json ../DATA/data/aerialvln-s/train.json ^
-  --output data/instruction_plan.jsonl ^
-  --bad-output data/bad_cases.jsonl ^
-  --client qwen_api ^
+python preprocess/parse_instruction.py \
+  --dataset-json ../DATA/data/aerialvln-s/train.json \
+  --output data/instruction_plan.jsonl \
+  --bad-output data/bad_cases.jsonl \
+  --client qwen_api \
   --max-retries 1
 ```
 
@@ -293,15 +374,17 @@ DATA/v0/diagnostics/parse_instruction/events.jsonl
 DATA/v0/diagnostics/parse_instruction/milestone_count_distribution.png
 ```
 
+schema 对纯动作 milestone 做了宽容处理：如果 Qwen 返回的 milestone 是 `turn_left`、`go_up`、`land`、`stop` 等动作语义，且没有显式 `landmarks` 和 `spatial_relation`，`schemas/milestone_schema.py` 会自动补一个弱 `spatial_relation="toward"`。这样可以减少因为原始指令缺少地标而被丢弃的样本，同时仍然保留 3-8 个 milestone、连续 `mid` 和至少 1 个 `verification_cues` 的校验。
+
 ### 7.2 构造 step-window
 
 ```bash
-python preprocess/build_step_windows.py ^
-  --dataset-json ../DATA/data/aerialvln-s/train.json ^
-  --instruction-plan data/instruction_plan.jsonl ^
-  --output data/step_windows/train.jsonl ^
-  --history-len 16 ^
-  --max-keyframes 8 ^
+python preprocess/build_step_windows.py \
+  --dataset-json ../DATA/data/aerialvln-s/train.json \
+  --instruction-plan data/instruction_plan.jsonl \
+  --output data/step_windows/train.jsonl \
+  --history-len 16 \
+  --max-keyframes 8 \
   --keyframe-interval 4
 ```
 
@@ -324,9 +407,9 @@ DATA/v0/diagnostics/build_step_windows/episode_step_count_distribution.png
 Smoke test：
 
 ```bash
-python preprocess/build_action_prior_cache.py ^
-  --step-windows data/step_windows/train.jsonl ^
-  --output data/action_prior_cache/train.jsonl ^
+python preprocess/build_action_prior_cache.py \
+  --step-windows data/step_windows/train.jsonl \
+  --output data/action_prior_cache/train.jsonl \
   --client uniform
 ```
 
@@ -355,8 +438,8 @@ DATA/v0/diagnostics/build_action_prior_cache/top_prior_action_distribution.png
 ### 7.4 构造 rollout labels
 
 ```bash
-python preprocess/build_rollout_labels.py ^
-  --step-windows data/step_windows/train.jsonl ^
+python preprocess/build_rollout_labels.py \
+  --step-windows data/step_windows/train.jsonl \
   --output data/rollout_labels/train.jsonl
 ```
 
@@ -374,13 +457,13 @@ DATA/v0/diagnostics/build_rollout_labels/average_cost_by_action.png
 ### 7.5 构造 latent targets
 
 ```bash
-python preprocess/build_latent_targets.py ^
-  --step-windows data/step_windows/train.jsonl ^
-  --output-dir data/latent_targets/train ^
-  --index-output data/latent_targets/train_index.jsonl ^
-  --model-config configs/model.yaml ^
-  --image-root ../DATA/data/aerialvln-s ^
-  --device cuda ^
+python preprocess/build_latent_targets.py \
+  --step-windows data/step_windows/train.jsonl \
+  --output-dir data/latent_targets/train \
+  --index-output data/latent_targets/train_index.jsonl \
+  --model-config configs/model.yaml \
+  --image-root ../DATA/data/aerialvln-s \
+  --device cuda \
   --gpu-ids 0
 ```
 
@@ -404,19 +487,19 @@ missing_images_zero_fallback
 ### 7.6 训练 evaluator
 
 ```bash
-python training/train_action_evaluator.py ^
-  --step-windows data/step_windows/train.jsonl ^
-  --rollout-labels data/rollout_labels/train.jsonl ^
-  --action-prior-cache data/action_prior_cache/train.jsonl ^
-  --latent-index data/latent_targets/train_index.jsonl ^
-  --image-root ../DATA/data/aerialvln-s ^
-  --model-config configs/model.yaml ^
-  --output-dir DATA/v0/checkpoints/action_evaluator ^
-  --device cuda ^
-  --gpu-ids 0 ^
-  --batch-size 16 ^
-  --epochs 10 ^
-  --lr 0.00025 ^
+python training/train_action_evaluator.py \
+  --step-windows data/step_windows/train.jsonl \
+  --rollout-labels data/rollout_labels/train.jsonl \
+  --action-prior-cache data/action_prior_cache/train.jsonl \
+  --latent-index data/latent_targets/train_index.jsonl \
+  --image-root ../DATA/data/aerialvln-s \
+  --model-config configs/model.yaml \
+  --output-dir DATA/v0/checkpoints/action_evaluator \
+  --device cuda \
+  --gpu-ids 0 \
+  --batch-size 16 \
+  --epochs 10 \
+  --lr 0.00025 \
   --prior-loss-weight 0.5
 ```
 
@@ -454,23 +537,23 @@ python scripts/check_v0_setup.py --port 30000
 ### 7.8 Eval 闭环
 
 ```bash
-python inference/run_eval_aerialvln.py ^
-  --v0-checkpoint DATA/v0/checkpoints/action_evaluator/ckpt_last.pth ^
-  --model-config configs/model.yaml ^
-  --fuser-config configs/fuser.yaml ^
-  --eval-output DATA/v0/eval/aerialvln_val_unseen.json ^
-  --diagnostics-dir DATA/v0/diagnostics/eval_aerialvln ^
-  --instruction-plan data/instruction_plan.jsonl ^
-  --vlm-client qwen_api ^
-  --device cuda ^
-  --gpu-ids 0 ^
-  --score-preview-steps 5 ^
-  --stop-completion-threshold 0.35 ^
-  --batchSize 1 ^
-  --EVAL_DATASET val_unseen ^
-  --EVAL_NUM -1 ^
-  --maxAction 500 ^
-  --collect_type TF ^
+python inference/run_eval_aerialvln.py \
+  --v0-checkpoint DATA/v0/checkpoints/action_evaluator/ckpt_last.pth \
+  --model-config configs/model.yaml \
+  --fuser-config configs/fuser.yaml \
+  --eval-output DATA/v0/eval/aerialvln_val_unseen.json \
+  --diagnostics-dir DATA/v0/diagnostics/eval_aerialvln \
+  --instruction-plan data/instruction_plan.jsonl \
+  --vlm-client qwen_api \
+  --device cuda \
+  --gpu-ids 0 \
+  --score-preview-steps 5 \
+  --stop-completion-threshold 0.35 \
+  --batchSize 1 \
+  --EVAL_DATASET val_unseen \
+  --EVAL_NUM -1 \
+  --maxAction 500 \
+  --collect_type TF \
   --simulator_tool_port 30000
 ```
 
@@ -545,32 +628,205 @@ DATA/v0/diagnostics/eval_aerialvln/planner_loop/episode_*_step_*_scores.png
 | `fallback.repeated_turn_patience` | `2` | 连续转向步数 |
 | `fallback.conservative_actions` | `MOVE_FORWARD, STOP` | fallback 优先动作 |
 
-### 8.4 常用脚本参数
+### 8.4 命令行参数总览
 
-| 脚本 | 关键参数 |
-| --- | --- |
-| `parse_instruction.py` | `--dataset-json`, `--output`, `--bad-output`, `--client`, `--max-retries`, `--diagnostics-dir` |
-| `build_step_windows.py` | `--dataset-json`, `--instruction-plan`, `--history-len`, `--max-keyframes`, `--keyframe-interval` |
-| `build_action_prior_cache.py` | `--step-windows`, `--output`, `--image-root`, `--client`, `--preview-count` |
-| `build_rollout_labels.py` | `--step-windows`, `--output` |
-| `build_latent_targets.py` | `--step-windows`, `--model-config`, `--image-root`, `--device`, `--gpu-ids`, `--token-dim` |
-| `train_action_evaluator.py` | `--step-windows`, `--rollout-labels`, `--action-prior-cache`, `--latent-index`, `--image-root`, `--device`, `--gpu-ids`, `--batch-size`, `--epochs`, `--lr`, `--prior-loss-weight` |
-| `run_eval_aerialvln.py` | `--v0-checkpoint`, `--instruction-plan`, `--vlm-client`, `--device`, `--gpu-ids`, `--score-preview-steps`, `--stop-completion-threshold`, `--batchSize`, `--EVAL_DATASET`, `--EVAL_NUM`, `--maxAction`, `--simulator_tool_port` |
-| `AirVLNSimulatorServerTool.py` | `--gpus`/`--gpu-ids`, `--port` |
+下面只列仓库当前实际解析的命令行参数。没有出现在表里的配置项通常来自 `configs/*.yaml`，或是 `run_eval_aerialvln.py` 透传给原 AirVLN 参数解析器的 legacy 参数。
 
-### 8.5 原 AirVLN 透传参数
+#### `scripts/check_v0_setup.py`
 
-`run_eval_aerialvln.py` 会把未知参数透传给 `src/common/param.py`。常用：
-
-| 参数 | 默认值 | 作用 |
+| 参数 | 默认值 | 含义 |
 | --- | --- | --- |
-| `--project_prefix` | 当前目录父级 | 对你的结构就是 `AirVLN_ws` |
-| `--batchSize` | `8` | AirSim 并行 episode 数，调试建议 `1` |
-| `--EVAL_DATASET` | `val_unseen` | split 名称，对应 `../DATA/data/aerialvln/{split}.json` |
+| `--workspace-root` | `None` | 工作区根目录，里面应包含 `AeroForesee/`、`DATA/`、`ENVs/`，不传时取项目目录的父级 |
+| `--project-dir` | `None` | AeroForesee 项目目录，不传时自动取脚本所在仓库根目录 |
+| `--model-config` | `configs/model.yaml` | 要检查的模型配置文件 |
+| `--fuser-config` | `configs/fuser.yaml` | 要检查的融合器配置文件 |
+| `--eval-split` | `val_unseen` | 检查 `../DATA/data/aerialvln/{split}.json` 是否存在 |
+| `--port` | `30000` | 检查本地 simulator server 端口是否已监听 |
+| `--gpu-ids` | `None` | 逗号分隔的物理 GPU 编号，用 `nvidia-smi` 验证是否存在 |
+| `--strict` | `False` | 有 warning 也返回非零退出码，适合 CI 或严格部署检查 |
+
+#### `preprocess/parse_instruction.py`
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--dataset-json` | 必填 | 输入 dataset JSON，例如 `../DATA/data/aerialvln-s/train.json` |
+| `--output` | `data/instruction_plan.jsonl` | 成功解析出的 instruction-to-milestone 结果 |
+| `--bad-output` | `data/bad_cases.jsonl` | 多次解析或 schema 校验失败的样本 |
+| `--prompt` | `prompts/milestone_prompt.txt` | milestone parser 的 system prompt |
+| `--client` | `rule` | LLM 客户端，`rule` 用于 smoke test，`qwen_api` 用 DashScope API，`qwen_local` 调本地命令 |
+| `--max-retries` | `1` | 单条指令解析失败后的重试次数，总尝试次数是 `max_retries + 1` |
+| `--diagnostics-dir` | `DATA/v0/diagnostics/parse_instruction` | summary、events 和 milestone 分布图输出目录 |
+
+#### `preprocess/build_step_windows.py`
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--dataset-json` | 必填 | 输入 dataset JSON，读取 actions、reference_path、图像路径等字段 |
+| `--instruction-plan` | `data/instruction_plan.jsonl` | milestone 解析结果；缺失时用 `default_plan()` 生成 3 段 follow plan |
+| `--output` | `data/step_windows/train.jsonl` | 输出逐步训练样本窗口 |
+| `--history-len` | `16` | 每个样本保留的历史 action 和 pose delta 长度，不足时前置补零 |
+| `--max-keyframes` | `8` | 每个样本最多保留的历史关键帧数量 |
+| `--keyframe-interval` | `4` | 固定间隔选择关键帧时的步长 |
+| `--diagnostics-dir` | `DATA/v0/diagnostics/build_step_windows` | summary、events 和 episode step 分布图输出目录 |
+
+#### `preprocess/build_action_prior_cache.py`
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--step-windows` | 必填 | `build_step_windows.py` 生成的 JSONL |
+| `--output` | `data/action_prior_cache/train.jsonl` | 每个 sample 的 action prior 分数缓存 |
+| `--prompt` | `prompts/action_prior_prompt.txt` | VLM action prior 的 prompt |
+| `--client` | `uniform` | VLM 客户端，`uniform` 输出均匀先验，`qwen_api` 用 DashScope VLM，`qwen_local` 调本地命令 |
+| `--image-root` | `None` | 相对图像路径的根目录，例如 `../DATA/data/aerialvln-s` |
+| `--max-keyframes` | `2` | 读取 step-window 中最近多少张关键帧；当前送入 prior 时还会截取最后 2 张 |
+| `--diagnostics-dir` | `DATA/v0/diagnostics/build_action_prior_cache` | summary、prior preview 和 top action 分布图输出目录 |
+| `--preview-count` | `20` | 写入 `prior_preview.jsonl` 并打印 preview 的前 N 个样本数 |
+
+#### `preprocess/build_rollout_labels.py`
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--step-windows` | 必填 | 输入 step-window JSONL |
+| `--output` | `data/rollout_labels/train.jsonl` | 输出每个 sample、每个候选动作的 progress/cost label |
+| `--diagnostics-dir` | `DATA/v0/diagnostics/build_rollout_labels` | summary、positive progress 和 average cost 图输出目录 |
+
+#### `preprocess/build_latent_targets.py`
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--step-windows` | 必填 | 输入 step-window JSONL，使用其中的 `next_rgb_path` 构造 future latent |
+| `--output-dir` | `data/latent_targets/train` | 每个 sample 的 `.pt` latent target 输出目录 |
+| `--index-output` | `data/latent_targets/train_index.jsonl` | sample id 到 latent target 文件的索引 |
+| `--model-config` | `configs/model.yaml` | 读取视觉骨干、输入尺寸和 hidden_dim |
+| `--image-root` | `None` | 相对图像路径根目录 |
+| `--device` | `cuda` | PyTorch 设备，支持 `cuda`、`cuda:0`、`cpu` |
+| `--gpu-ids` | `None` | 限制本进程可见的物理 GPU，例如 `0` 或 `0,1` |
+| `--token-dim` | `None` | 覆盖 latent token 维度；不传时使用 `model.hidden_dim` |
+| `--diagnostics-dir` | `DATA/v0/diagnostics/build_latent_targets` | summary 输出目录 |
+| `--preview-count` | `10` | 打印前 N 个 latent target 构造 preview |
+
+#### `training/train_state_encoder.py`
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--model-config` | `configs/model.yaml` | 读取 state builder 初始化所需的模型结构 |
+| `--output` | `DATA/v0/checkpoints/state_builder_init.pth` | 仅保存初始化 state builder checkpoint 的路径 |
+
+#### `training/train_action_evaluator.py`
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--step-windows` | 必填 | 输入 step-window JSONL |
+| `--rollout-labels` | 必填 | 输入 rollout progress/cost label JSONL |
+| `--action-prior-cache` | `None` | 可选 action prior cache；传入后 prior 会参与样本权重 |
+| `--latent-index` | `None` | 可选 future latent target 索引；缺失时 dataset 使用 fallback |
+| `--image-root` | `None` | 相对 RGB 路径根目录 |
+| `--model-config` | `configs/model.yaml` | 模型、视觉骨干、history 和训练默认配置 |
+| `--output-dir` | `DATA/v0/checkpoints/action_evaluator` | checkpoint 输出目录 |
+| `--device` | `cuda` | PyTorch 训练设备 |
+| `--gpu-ids` | `None` | 限制本训练进程可见的物理 GPU |
+| `--batch-size` | `16` | DataLoader batch size |
+| `--epochs` | `10` | 训练轮数 |
+| `--lr` | `0.00025` | AdamW 学习率 |
+| `--num-workers` | `0` | DataLoader worker 数，Windows 建议从 0 开始 |
+| `--progress-loss-weight` | `1.0` | progress gain MSE loss 权重 |
+| `--cost-loss-weight` | `1.0` | cost MSE loss 权重 |
+| `--latent-loss-weight` | `1.0` | next latent MSE loss 权重 |
+| `--prior-loss-weight` | `0.5` | 用 cached action prior 放大 progress/cost supervision 权重的系数 |
+| `--diagnostics-dir` | `DATA/v0/diagnostics/train_action_evaluator` | training log、loss curve 和 summary 输出目录 |
+| `--preview-batches` | `2` | 每个 epoch 打印前 N 个 batch 的 loss 明细 |
+
+#### `training/tune_fuser.py`
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--output` | `configs/fuser.yaml` | 写出的融合配置路径 |
+| `--w-progress` | `0.5 1.0 1.5` | progress gain 权重候选列表 |
+| `--w-cost` | `0.3 0.7 1.0` | cost 惩罚权重候选列表 |
+| `--w-prior` | `0.0 0.3 0.6` | VLM prior 权重候选列表 |
+
+当前 `tune_fuser.py` 是占位校准脚本，会写入网格中的第一个组合；真正按验证集指标搜索时需要替换内部 score function。
+
+#### `airsim_plugin/AirVLNSimulatorServerTool.py`
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--gpus` | `0` | AirSim 场景渲染使用的物理 GPU 编号，逗号分隔 |
+| `--gpu-ids` | `None` | `--gpus` 的同义参数；如果传入则优先生效 |
+| `--port` | `30000` | simulator RPC server 监听端口 |
+
+#### `inference/run_eval_aerialvln.py`
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--v0-checkpoint` | `None` | evaluator checkpoint；不传则使用随机初始化模型，只适合 smoke test |
+| `--model-config` | `configs/model.yaml` | 模型结构和视觉骨干配置 |
+| `--fuser-config` | `configs/fuser.yaml` | 决策融合和 fallback 配置 |
+| `--vlm-client` | `uniform` | 在线 action prior 客户端，支持 `uniform`、`qwen_api`、`qwen_local` |
+| `--device` | `cuda` | planner/evaluator 使用的 PyTorch 设备 |
+| `--gpu-ids` | `None` | 限制 V0 planner 进程可见的物理 GPU |
+| `--eval-output` | `DATA/v0/eval/results.json` | eval 汇总 JSON 输出路径 |
+| `--diagnostics-dir` | `DATA/v0/diagnostics/eval_aerialvln` | eval summary、step log、metric 图和 planner 诊断输出目录 |
+| `--instruction-plan` | `data/instruction_plan.jsonl` | 在线 eval 时合并到 episode 的 milestone plan |
+| `--stop-completion-threshold` | `0.35` | milestone completion 低于该值时抑制 STOP prior |
+| `--score-preview-steps` | `5` | 每个 episode 前 N 步保存候选动作分数 PNG |
+
+`run_eval_aerialvln.py` 使用 `parse_known_args()`，不认识的参数会继续交给 `src/common/param.py`。它还会强制追加 `--run_type eval --ablate_depth`，保证 V0 使用 eval 模式和 front-view RGB-only 设置。
+
+#### `inference/run_eval_openfly.py`
+
+当前无可配置参数。该入口在 V0 中会直接抛出 `NotImplementedError`，OpenFly transfer 计划留到 V2。
+
+### 8.5 `run_eval_aerialvln.py` 可透传的 AirVLN 参数
+
+这些参数来自 `src/common/param.py`。V0 eval 常用的是 `--batchSize`、`--EVAL_DATASET`、`--EVAL_NUM`、`--maxAction`、`--simulator_tool_port`；其余多为保留的 AirVLN baseline/训练参数。
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--project_prefix` | 当前目录父级 | 工作区根目录，默认从 `AirVLN_ws/AeroForesee` 推到 `AirVLN_ws` |
+| `--run_type` | `train`，V0 eval 强制为 `eval` | 原 AirVLN 运行模式，限定为 `collect/train/eval` |
+| `--policy_type` | `v0` | 策略类型；AeroForesee 固定为 `v0` |
+| `--collect_type` | `TF` | 环境监督模式，支持 `TF` 或 `dagger` |
+| `--name` | `default` | 实验名，用于 legacy 日志路径 |
+| `--maxInput` | `300` | 最大指令 token/长度相关 legacy 参数 |
+| `--maxAction` | `500` | 单个 episode 最大动作步数 |
+| `--dagger_it` | `1` | DAgger 迭代编号，V0 eval 通常不使用 |
+| `--epochs` | `10` | legacy 训练 epoch，V0 eval 通常不使用 |
+| `--lr` | `0.00025` | legacy 学习率，V0 eval 通常不使用 |
+| `--batchSize` | `8` | AirSim 并行 episode 数；调试建议设为 `1` |
+| `--trainer_gpu_device` | `0` | legacy trainer GPU 编号，V0 PyTorch 设备使用 `--gpu-ids/--device` |
+| `--Image_Height_RGB` | `224` | 环境 RGB 图像高度 |
+| `--Image_Width_RGB` | `224` | 环境 RGB 图像宽度 |
+| `--Image_Height_DEPTH` | `256` | 环境 depth 图像高度；V0 eval 强制 ablate depth |
+| `--Image_Width_DEPTH` | `256` | 环境 depth 图像宽度；V0 eval 强制 ablate depth |
+| `--inflection_weight_coef` | `1.9` | legacy imitation learning inflection 权重 |
+| `--nav_graph_path` | `../DATA/data/disceret/processed/nav_graph_10` | graph progress/shortest path 相关文件路径 |
+| `--token_dict_path` | `../DATA/data/disceret/processed/token_dict_10` | legacy tokenizer 字典路径 |
+| `--vertices_path` | `../DATA/data/disceret/scene_meshes` | legacy scene mesh vertices 路径 |
+| `--dagger_mode_load_scene` | `[]` | DAgger 模式指定加载的场景列表 |
+| `--dagger_update_size` | `8000` | DAgger 单轮更新样本量 |
+| `--dagger_mode` | `end` | DAgger 模式，支持 `end/middle/nearest` |
+| `--dagger_p` | `1.0` | DAgger teacher forcing 概率 |
+| `--TF_mode_load_scene` | `[]` | TF 模式指定加载的场景列表 |
+| `--ablate_instruction` | `False` | 是否屏蔽语言指令 |
+| `--ablate_rgb` | `False` | 是否屏蔽 RGB |
+| `--ablate_depth` | `False`，V0 eval 强制为 `True` | 是否屏蔽 depth |
+| `--SEQ2SEQ_use_prev_action` | `False` | legacy seq2seq 是否使用上一动作 |
+| `--PROGRESS_MONITOR_use` | `False` | legacy progress monitor 开关 |
+| `--PROGRESS_MONITOR_alpha` | `1.0` | legacy progress monitor loss 权重 |
+| `--EVAL_CKPT_PATH_DIR` | `None` | legacy eval checkpoint 目录，V0 checkpoint 用 `--v0-checkpoint` |
+| `--EVAL_DATASET` | `val_unseen` | eval split，对应 `../DATA/data/aerialvln/{split}.json` |
 | `--EVAL_NUM` | `-1` | eval episode 数，`-1` 表示全量 |
-| `--maxAction` | `500` | 单 episode 最大动作数 |
-| `--simulator_tool_port` | `30000` | simulator server 端口 |
-| `--collect_type` | `TF` | 保留 AirVLN 环境模式 |
+| `--EVAL_GENERATE_VIDEO` | `False` | legacy 视频输出开关 |
+| `--rgb_encoder_use_place365` | `False` | legacy RGB encoder 选项 |
+| `--tokenizer_use_bert` | `False` | legacy tokenizer 选项 |
+| `--simulator_tool_port` | `30000` | 连接 simulator server 的端口，必须与 server `--port` 一致 |
+| `--DDP_MASTER_PORT` | `20000` | legacy DDP master port |
+| `--continue_start_from_dagger_it` | `None` | legacy 断点续训的 DAgger 轮次 |
+| `--continue_start_from_checkpoint_path` | `None` | legacy 断点续训 checkpoint 路径 |
+| `--vlnbert` | `prevalent` | legacy VLN-BERT 选项，当前 parser 用法保留了历史默认值 |
+| `--featdropout` | `0.4` | legacy feature dropout 选项，当前 parser 用法保留了历史默认值 |
+| `--action_feature` | `32` | legacy action feature 维度，当前 parser 用法保留了历史默认值 |
 
 ## 9. 调参指南
 
@@ -713,7 +969,7 @@ python scripts/check_v0_setup.py
 ### ENVs 检查
 
 ```bash
-Get-ChildItem ../ENVs
+ls ../ENVs
 ```
 
 应该能看到 `env_*`。启动 server：
