@@ -42,6 +42,8 @@
     从数据到 eval 的完整命令链。
 19. [18_risks_and_extension_points.md](18_risks_and_extension_points.md)  
     当前局限、排查优先级和后续扩展建议。
+20. [19_runtime_rgb_collection.md](19_runtime_rgb_collection.md)
+    AirVLN runtime RGB 采集、LMDB 导出和 step-window 图像路径接线。
 
 ## 文档覆盖的 repo 模块
 

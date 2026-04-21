@@ -28,6 +28,25 @@ def load_plans(path: str | Path) -> Dict[str, Dict[str, Any]]:
     return {row["instruction_id"]: row for row in read_jsonl(path)}
 
 
+def load_rgb_index(path: str | Path | None) -> Dict[str, Dict[int, str]]:
+    if not path or not Path(path).exists():
+        return {}
+    index: Dict[str, Dict[int, str]] = {}
+    for row in read_jsonl(path):
+        step = int(row["step"])
+        image_path = str(row["rgb_path"])
+        keys = [
+            row.get("trajectory_id"),
+            row.get("episode_id"),
+            row.get("instruction_id"),
+        ]
+        for key in keys:
+            if key is None:
+                continue
+            index.setdefault(str(key), {})[step] = image_path
+    return index
+
+
 def default_plan(item_id: str, instruction: str) -> Dict[str, Any]:
     words = instruction.split()
     chunks = [" ".join(words[i::3]) for i in range(3)]
@@ -50,8 +69,11 @@ def build(args: argparse.Namespace) -> None:
     diag_dir = ensure_dir(args.diagnostics_dir)
     episodes = load_episodes(args.dataset_json)
     plans = load_plans(args.instruction_plan)
+    rgb_index = load_rgb_index(args.rgb_index)
     rows = []
     step_hist: Dict[str, float] = {}
+    indexed_rgb = 0
+    missing_rgb = 0
     print_event("build_step_windows", "start", dataset=args.dataset_json, episodes=len(episodes))
     for episode in episodes:
         item_id = instruction_id(episode)
@@ -75,8 +97,15 @@ def build(args: argparse.Namespace) -> None:
                 action_history.insert(0, 0)
                 deltas.insert(0, [0.0, 0.0, 0.0, 0.0])
             keyframes = select_keyframe_indices(t, actions, milestone_ids, progress_values, args.max_keyframes, args.keyframe_interval)
-            rgb_path = _path_at(episode, ["rgb_paths", "image_paths", "images", "frames"], t)
-            next_rgb_path = _path_at(episode, ["rgb_paths", "image_paths", "images", "frames"], t + 1)
+            rgb_path = _path_at(episode, ["rgb_paths", "image_paths", "images", "frames"], t) or _indexed_rgb_path(rgb_index, episode, item_id, t)
+            next_rgb_path = _path_at(episode, ["rgb_paths", "image_paths", "images", "frames"], t + 1) or _indexed_rgb_path(rgb_index, episode, item_id, t + 1)
+            keyframe_rgb_paths = [
+                _path_at(episode, ["rgb_paths", "image_paths", "images", "frames"], idx) or _indexed_rgb_path(rgb_index, episode, item_id, idx)
+                for idx in keyframes
+            ]
+            keyframe_rgb_paths = [path for path in keyframe_rgb_paths if path]
+            indexed_rgb += int(bool(rgb_path and not _path_at(episode, ["rgb_paths", "image_paths", "images", "frames"], t)))
+            missing_rgb += int(not bool(rgb_path))
             rows.append({
                 "sample_id": f"{item_id}_{t}",
                 "episode_id": episode.get("episode_id"),
@@ -102,10 +131,7 @@ def build(args: argparse.Namespace) -> None:
                 "keyframe_indices": keyframes,
                 "rgb_path": rgb_path,
                 "next_rgb_path": next_rgb_path,
-                "keyframe_rgb_paths": [
-                    path for path in (_path_at(episode, ["rgb_paths", "image_paths", "images", "frames"], idx) for idx in keyframes)
-                    if path
-                ],
+                "keyframe_rgb_paths": keyframe_rgb_paths,
                 "legal_action_ids": list(range(8)),
                 "reference_pose": ref_path[t] if ref_path and t < len(ref_path) else None,
                 "next_reference_pose": ref_path[t + 1] if ref_path and t + 1 < len(ref_path) else None,
@@ -117,7 +143,16 @@ def build(args: argparse.Namespace) -> None:
         print_event("build_step_windows", "episode_done", instruction_id=item_id, steps=steps, milestones=len(milestones))
         append_jsonl(diag_dir / "events.jsonl", {"stage": "build_step_windows", "instruction_id": item_id, "steps": steps, "milestones": len(milestones)})
     write_jsonl(args.output, rows)
-    write_json(diag_dir / "summary.json", {"episodes": len(episodes), "step_windows": len(rows)})
+    write_json(
+        diag_dir / "summary.json",
+        {
+            "episodes": len(episodes),
+            "step_windows": len(rows),
+            "rgb_index": args.rgb_index,
+            "rgb_from_index": indexed_rgb,
+            "missing_rgb_path": missing_rgb,
+        },
+    )
     save_bar_png(diag_dir / "episode_step_count_distribution.png", "Episode step count distribution", step_hist)
     print_event("build_step_windows", "done", step_windows=len(rows), diagnostics=str(diag_dir))
 
@@ -126,6 +161,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset-json", required=True)
     parser.add_argument("--instruction-plan", default="data/instruction_plan.jsonl")
+    parser.add_argument("--rgb-index", default=None, help="JSONL produced by preprocess/export_lmdb_rgb.py; used when annotation episodes do not contain image paths.")
     parser.add_argument("--output", default="data/step_windows/train.jsonl")
     parser.add_argument("--history-len", type=int, default=16)
     parser.add_argument("--max-keyframes", type=int, default=8)
@@ -143,6 +179,16 @@ def _path_at(episode: Dict[str, Any], keys: List[str], index: int) -> str | None
                 value = value.get("path") or value.get("rgb") or value.get("image")
             if value:
                 return str(value)
+    return None
+
+
+def _indexed_rgb_path(index: Dict[str, Dict[int, str]], episode: Dict[str, Any], item_id: str, step: int) -> str | None:
+    for key in (episode.get("trajectory_id"), episode.get("episode_id"), item_id):
+        if key is None:
+            continue
+        path = index.get(str(key), {}).get(int(step))
+        if path:
+            return path
     return None
 
 

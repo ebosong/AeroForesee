@@ -376,12 +376,60 @@ DATA/v0/diagnostics/parse_instruction/milestone_count_distribution.png
 
 schema 对纯动作 milestone 做了宽容处理：如果 Qwen 返回的 milestone 是 `turn_left`、`go_up`、`land`、`stop` 等动作语义，且没有显式 `landmarks` 和 `spatial_relation`，`schemas/milestone_schema.py` 会自动补一个弱 `spatial_relation="toward"`。这样可以减少因为原始指令缺少地标而被丢弃的样本，同时仍然保留 3-8 个 milestone、连续 `mid` 和至少 1 个 `verification_cues` 的校验。
 
-### 7.2 构造 step-window
+### 7.2 采集 teacher-forcing RGB
+
+AirVLN/AerialVLN 的标注 JSON 通常不包含逐步 `rgb_path`。V0 的 action prior cache 和 latent target 都需要真实 RGB，因此要先用 AirVLN simulator 沿 teacher-forcing 轨迹采集运行时观测。
+
+先启动 simulator server：
+
+```bash
+python airsim_plugin/AirVLNSimulatorServerTool.py --gpus 0 --port 30000
+```
+
+再采集 RGB LMDB：
+
+```bash
+python inference/collect_tf_rgb.py \
+  --split train \
+  --batchSize 1 \
+  --name v0_rgb_train \
+  --maxAction 500 \
+  --simulator_tool_port 30000
+```
+
+默认会强制 `--run_type collect --collect_type TF --ablate_depth`，沿标注动作执行，并把每个 step 的 RGB 写入：
+
+```text
+../DATA/img_features/collect/v0_rgb_train/train_rgb
+```
+
+然后导出成 PNG 和索引：
+
+```bash
+python preprocess/export_lmdb_rgb.py \
+  --lmdb-dir ../DATA/img_features/collect/v0_rgb_train/train_rgb \
+  --output-root data/runtime_rgb/train \
+  --index-output data/runtime_rgb/train_index.jsonl \
+  --dataset-json ../DATA/data/aerialvln-s/train.json
+```
+
+索引里会保存：
+
+```text
+trajectory_id
+episode_id
+step
+rgb_path
+lmdb_key
+```
+
+### 7.3 构造 step-window
 
 ```bash
 python preprocess/build_step_windows.py \
   --dataset-json ../DATA/data/aerialvln-s/train.json \
   --instruction-plan data/instruction_plan.jsonl \
+  --rgb-index data/runtime_rgb/train_index.jsonl \
   --output data/step_windows/train.jsonl \
   --history-len 16 \
   --max-keyframes 8 \
@@ -400,9 +448,10 @@ DATA/v0/diagnostics/build_step_windows/episode_step_count_distribution.png
 说明：
 
 - 若原始 dataset JSON 含 `rgb_paths/image_paths/images/frames` 字段，step-window 会记录 `rgb_path`、`next_rgb_path`、`keyframe_rgb_paths`。
-- 若没有这些字段，训练图像和 latent target 会使用可控 fallback，并在 summary 中记录。
+- 若没有这些字段，`--rgb-index` 会按 `trajectory_id/episode_id + step` 回填运行时采集的 RGB 路径。
+- 如果既没有原始路径也没有 index，训练图像和 latent target 会使用可控 fallback，并在 summary 中记录 `missing_rgb_path`。
 
-### 7.3 构造 action prior cache
+### 7.4 构造 action prior cache
 
 Smoke test：
 
@@ -419,7 +468,6 @@ python preprocess/build_action_prior_cache.py \
 python preprocess/build_action_prior_cache.py \
   --step-windows data/step_windows/train.jsonl \
   --output data/action_prior_cache/train.jsonl \
-  --image-root ../DATA/data/aerialvln-s \
   --client qwen_api \
   --preview-count 20
 ```
@@ -435,7 +483,7 @@ DATA/v0/diagnostics/build_action_prior_cache/prior_preview.jsonl
 DATA/v0/diagnostics/build_action_prior_cache/top_prior_action_distribution.png
 ```
 
-### 7.4 构造 rollout labels
+### 7.5 构造 rollout labels
 
 ```bash
 python preprocess/build_rollout_labels.py \
@@ -454,7 +502,7 @@ DATA/v0/diagnostics/build_rollout_labels/positive_progress_by_action.png
 DATA/v0/diagnostics/build_rollout_labels/average_cost_by_action.png
 ```
 
-### 7.5 构造 latent targets
+### 7.6 构造 latent targets
 
 ```bash
 python preprocess/build_latent_targets.py \
@@ -462,7 +510,6 @@ python preprocess/build_latent_targets.py \
   --output-dir data/latent_targets/train \
   --index-output data/latent_targets/train_index.jsonl \
   --model-config configs/model.yaml \
-  --image-root ../DATA/data/aerialvln-s \
   --device cuda \
   --gpu-ids 0
 ```
@@ -482,9 +529,9 @@ encoded_from_images
 missing_images_zero_fallback
 ```
 
-正式实验希望 `encoded_from_images` 尽量大；如果全部 fallback，说明 dataset JSON 没提供离线图像路径，或 `--image-root` 不对。
+正式实验希望 `encoded_from_images` 尽量大；如果全部 fallback，说明 step-window 没有接上 `next_rgb_path`，或者后续脚本传了不匹配的 `--image-root`。
 
-### 7.6 训练 evaluator
+### 7.7 训练 evaluator
 
 ```bash
 python training/train_action_evaluator.py \
@@ -492,7 +539,6 @@ python training/train_action_evaluator.py \
   --rollout-labels data/rollout_labels/train.jsonl \
   --action-prior-cache data/action_prior_cache/train.jsonl \
   --latent-index data/latent_targets/train_index.jsonl \
-  --image-root ../DATA/data/aerialvln-s \
   --model-config configs/model.yaml \
   --output-dir DATA/v0/checkpoints/action_evaluator \
   --device cuda \
@@ -515,7 +561,7 @@ DATA/v0/diagnostics/train_action_evaluator/loss_curve.png
 DATA/v0/diagnostics/train_action_evaluator/summary.json
 ```
 
-### 7.7 启动仿真服务
+### 7.8 启动仿真服务
 
 完整 eval 前需要 AirSim/ENVs 服务。
 
@@ -534,7 +580,7 @@ python scripts/check_v0_setup.py --port 30000
 
 如果提示端口 `30000` 已打开，说明服务在监听。若端口冲突，换一个端口，并在 eval 时传相同的 `--simulator_tool_port`。
 
-### 7.8 Eval 闭环
+### 7.9 Eval 闭环
 
 ```bash
 python inference/run_eval_aerialvln.py \
@@ -663,6 +709,7 @@ DATA/v0/diagnostics/eval_aerialvln/planner_loop/episode_*_step_*_scores.png
 | --- | --- | --- |
 | `--dataset-json` | 必填 | 输入 dataset JSON，读取 actions、reference_path、图像路径等字段 |
 | `--instruction-plan` | `data/instruction_plan.jsonl` | milestone 解析结果；缺失时用 `default_plan()` 生成 3 段 follow plan |
+| `--rgb-index` | `None` | runtime RGB 索引，通常由 `preprocess/export_lmdb_rgb.py` 生成；标注 JSON 没有图像路径时用它回填 |
 | `--output` | `data/step_windows/train.jsonl` | 输出逐步训练样本窗口 |
 | `--history-len` | `16` | 每个样本保留的历史 action 和 pose delta 长度，不足时前置补零 |
 | `--max-keyframes` | `8` | 每个样本最多保留的历史关键帧数量 |
@@ -705,6 +752,17 @@ DATA/v0/diagnostics/eval_aerialvln/planner_loop/episode_*_step_*_scores.png
 | `--diagnostics-dir` | `DATA/v0/diagnostics/build_latent_targets` | summary 输出目录 |
 | `--preview-count` | `10` | 打印前 N 个 latent target 构造 preview |
 
+#### `preprocess/export_lmdb_rgb.py`
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--lmdb-dir` | 必填 | `inference/collect_tf_rgb.py` 采集出的 RGB LMDB 目录 |
+| `--output-root` | `data/runtime_rgb/train` | 导出的 PNG 根目录 |
+| `--index-output` | `data/runtime_rgb/train_index.jsonl` | trajectory/episode/step 到 RGB path 的索引 |
+| `--dataset-json` | `None` | 可选标注 JSON，用于给索引补充 episode_id 和 scene_id |
+| `--limit` | `-1` | 只导出前 N 张，用于 smoke test |
+| `--diagnostics-dir` | `DATA/v0/diagnostics/export_lmdb_rgb` | summary 输出目录 |
+
 #### `training/train_state_encoder.py`
 
 | 参数 | 默认值 | 含义 |
@@ -746,6 +804,17 @@ DATA/v0/diagnostics/eval_aerialvln/planner_loop/episode_*_step_*_scores.png
 | `--w-prior` | `0.0 0.3 0.6` | VLM prior 权重候选列表 |
 
 当前 `tune_fuser.py` 是占位校准脚本，会写入网格中的第一个组合；真正按验证集指标搜索时需要替换内部 score function。
+
+#### `inference/collect_tf_rgb.py`
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--split` | `train` | 要采集的 dataset split，对应 `../DATA/data/aerialvln/{split}.json` |
+| `--max-episodes` | `-1` | 可选 episode 上限，smoke test 可设小值 |
+| `--flush-every` | `1` | 每 N 个 minibatch commit 一次 LMDB |
+| `--rgb-only` | `True` | 默认追加 `--ablate_depth`，只采 RGB |
+
+`collect_tf_rgb.py` 使用 `parse_known_args()`，不认识的参数会继续交给 `src/common/param.py`。常用透传参数是 `--batchSize`、`--name`、`--maxAction`、`--simulator_tool_port`、`--project_prefix`。
 
 #### `airsim_plugin/AirVLNSimulatorServerTool.py`
 
@@ -848,7 +917,7 @@ DATA/v0/diagnostics/eval_aerialvln/planner_loop/episode_*_step_*_scores.png
 | fallback 太频繁 | progress/cost 分布 | 降低 `low_progress_threshold` 或 `low_score_threshold` |
 | 路径很长 | `average_cost_by_action.png` | 提高 `w_cost` |
 | loss 不降 | `loss_curve.png`, label 分布 | 降低 `lr`，检查 `rollout_labels` 和 latent target |
-| `encoded_from_images=0` | `build_latent_targets/summary.json` | 检查 step-window 是否有图像路径和 `--image-root` |
+| `encoded_from_images=0` | `build_latent_targets/summary.json` | 检查 step-window 是否有 `next_rgb_path`；runtime RGB 路径已相对仓库根目录时不要再误传 `--image-root` |
 | CUDA OOM | 终端日志、`summary.json` 里的 `device/gpu_ids` | 降低 `--batch-size`、`history.max_keyframes` 或 `model.hidden_dim`，也可换 `--gpu-ids` 到空闲显卡 |
 | 用错显卡 | `summary.json` 里的 `cuda_visible_devices` | 显式传 `--gpu-ids 0` 或 `--gpu-ids 0,1`；AirSim server 也同步改 `--gpus` |
 
@@ -1026,10 +1095,14 @@ run_eval_aerialvln.py --vlm-client uniform
 看：
 
 ```text
+DATA/v0/diagnostics/export_lmdb_rgb/summary.json
+DATA/v0/diagnostics/build_step_windows/summary.json
 DATA/v0/diagnostics/build_latent_targets/summary.json
 ```
 
-如果 `missing_images_zero_fallback` 很高，说明离线 JSON 中没有图像路径或 `--image-root` 不对。这不影响工程跑通，但会影响训练质量。
+如果 `build_step_windows` 里 `missing_rgb_path` 很高，说明标注 JSON 没有图像路径，且没有用 `--rgb-index` 成功回填 runtime RGB。先跑 `inference/collect_tf_rgb.py` 和 `preprocess/export_lmdb_rgb.py`。
+
+如果 `missing_images_zero_fallback` 很高，说明 `next_rgb_path` 没填上，或者后续脚本误传了不匹配的 `--image-root`。使用 `data/runtime_rgb/...` 这类相对仓库根目录路径时，后续 prior、latent、training 脚本通常不需要 `--image-root`。
 
 ### DINOv2 检查
 

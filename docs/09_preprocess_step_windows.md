@@ -10,6 +10,7 @@
 python preprocess/build_step_windows.py ^
   --dataset-json ../DATA/data/aerialvln-s/train.json ^
   --instruction-plan data/instruction_plan.jsonl ^
+  --rgb-index data/runtime_rgb/train_index.jsonl ^
   --output data/step_windows/train.jsonl
 ```
 
@@ -17,6 +18,7 @@ python preprocess/build_step_windows.py ^
 
 - 原始 dataset JSON。
 - `instruction_plan.jsonl`。
+- runtime RGB index，通常由 `preprocess/export_lmdb_rgb.py` 生成。
 - 历史长度参数。
 - keyframe 参数。
 
@@ -25,6 +27,14 @@ episode 中最好包含：
 - `actions`
 - `reference_path`
 - RGB 路径字段，例如 `rgb_paths`、`image_paths`、`images`、`frames`
+
+如果 baseline annotation 没有 RGB 路径，则应先运行：
+
+```text
+inference/collect_tf_rgb.py -> preprocess/export_lmdb_rgb.py
+```
+
+然后通过 `--rgb-index` 回填 `rgb_path`、`next_rgb_path` 和 `keyframe_rgb_paths`。
 
 ## 输出
 
@@ -72,7 +82,8 @@ episode 中最好包含：
 7. 计算 milestone-local completion。
 8. 构造历史动作和 pose delta。
 9. 选择关键帧 index。
-10. 保存每一步的训练窗口。
+10. 优先读取 episode 内置 RGB 路径，缺失时按 `trajectory_id/episode_id + step` 查 runtime RGB index。
+11. 保存每一步的训练窗口。
 
 ## 分析
 
@@ -84,11 +95,12 @@ episode 中最好包含：
 - `global_completion` 单独保留，避免丢失全局进度。
 - `reference_pose` 系列字段用于几何 consequence label。
 - `prev_sample_id` 用于训练时读取上一时刻 latent。
+- `rgb_index` 是 AirVLN baseline annotation 与 V0 视觉训练链路之间的关键接线。
 
 ## 局限
 
 - milestone id 仍由 reference progress 初始化，不是由视觉证据得到。
-- 如果 dataset 没有 RGB 路径，视觉相关训练会 fallback 到零图。
+- 如果 dataset 没有 RGB 路径且没有提供 `--rgb-index`，视觉相关训练会 fallback 到零图。
 - 如果 reference_path 缺失，几何 consequence label 会回退成启发式。
 
 ## 排查
@@ -97,5 +109,7 @@ episode 中最好包含：
 
 - `step_windows` 数量是否等于预期 episode steps 总和。
 - `rgb_path` 是否非空。
+- `summary.json` 里的 `rgb_from_index` 是否大于 0。
+- `summary.json` 里的 `missing_rgb_path` 是否接近 0。
 - `reference_pose` 是否非空。
 - `milestone_id` 是否在 1 到 8。

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Dict, Optional
 
 import torch
@@ -25,7 +26,7 @@ class HashTextEncoder(nn.Module):
             words = [w for w in text.lower().replace(",", " ").split() if w]
             if not words:
                 words = ["empty"]
-            ids = torch.tensor([hash(w) % self.vocab_size for w in words[:64]], dtype=torch.long, device=device)
+            ids = torch.tensor([_stable_token_id(w, self.vocab_size) for w in words[:64]], dtype=torch.long, device=device)
             rows.append(self.embedding(ids).mean(dim=0))
         return self.norm(torch.stack(rows, dim=0))
 
@@ -99,4 +100,9 @@ class MilestoneAwareStateBuilder(nn.Module):
             "progress_token": progress_token,
             "prev_latent": prev_latent,
         }
+
+
+def _stable_token_id(word: str, vocab_size: int) -> int:
+    digest = hashlib.blake2b(word.encode("utf-8"), digest_size=4).digest()
+    return int.from_bytes(digest, byteorder="big", signed=False) % vocab_size
 

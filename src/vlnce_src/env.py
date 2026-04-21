@@ -535,7 +535,7 @@ class AirVLNENV:
                 cnt += 1
 
                 #
-                if self.split in ['train'] and args.run_type in ['collect'] and args.collect_type in ['TF']:
+                if args.run_type in ['collect'] and args.collect_type in ['TF']:
                     trajectory_id = state.episode_info['trajectory_id']
                     step = state.step
                     lmdb_rgb_key = '{}_{}_rgb'.format(trajectory_id, step)

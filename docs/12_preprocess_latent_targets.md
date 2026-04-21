@@ -12,7 +12,6 @@ python preprocess/build_latent_targets.py ^
   --output-dir data/latent_targets/train ^
   --index-output data/latent_targets/train_index.jsonl ^
   --model-config configs/model.yaml ^
-  --image-root ../DATA/data/aerialvln-s ^
   --device cuda ^
   --gpu-ids 0
 ```
@@ -22,7 +21,7 @@ python preprocess/build_latent_targets.py ^
 - step-window JSONL。
 - `next_rgb_path`。
 - model config。
-- image root。
+- optional image root。
 - device/gpu settings。
 
 ## 输出
@@ -90,5 +89,5 @@ current state + action + prev_latent -> next_latent
 
 1. 检查 `encoded_from_images` 是否太低。
 2. 检查 `token_dim` 是否与 `model.hidden_dim` 一致。
-3. 检查 image root 是否正确。
+3. 检查 `next_rgb_path` 是否存在；如果路径已经是 `data/runtime_rgb/...`，通常不要额外传 `--image-root`。
 4. 检查 DINOv2/ResNet 权重是否成功加载。

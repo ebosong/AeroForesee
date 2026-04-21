@@ -10,7 +10,6 @@
 python preprocess/build_action_prior_cache.py ^
   --step-windows data/step_windows/train.jsonl ^
   --output data/action_prior_cache/train.jsonl ^
-  --image-root ../DATA/data/aerialvln-s ^
   --client qwen_api
 ```
 
@@ -91,4 +90,5 @@ prior cache 也可以用于诊断 VLM 直觉：
 
 - 离线 prior 是单步打分，不会考虑未来多步。
 - VLM 分数依赖 prompt 和图像质量。
-- 如果 RGB 路径不在 dataset 中，需要补 image_root 或重新导出图像路径。
+- 如果 RGB 路径不在 dataset 中，需要先用 `collect_tf_rgb.py` 和 `export_lmdb_rgb.py` 导出 runtime RGB，再在 `build_step_windows.py` 里通过 `--rgb-index` 回填。
+- 如果 `rgb_path` 已经是 `data/runtime_rgb/...` 这类相对仓库根目录的路径，通常不要再传 `--image-root`。

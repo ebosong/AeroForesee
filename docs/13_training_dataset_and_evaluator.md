@@ -16,7 +16,6 @@ python training/train_action_evaluator.py ^
   --rollout-labels data/rollout_labels/train.jsonl ^
   --action-prior-cache data/action_prior_cache/train.jsonl ^
   --latent-index data/latent_targets/train_index.jsonl ^
-  --image-root ../DATA/data/aerialvln-s ^
   --model-config configs/model.yaml ^
   --output-dir DATA/v0/checkpoints/action_evaluator ^
   --device cuda ^

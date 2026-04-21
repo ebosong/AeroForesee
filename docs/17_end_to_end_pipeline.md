@@ -31,10 +31,38 @@ python preprocess/parse_instruction.py ^
 
 ## 2. 构造 step windows
 
+AirVLN baseline annotation 通常不带逐步 RGB 文件路径。先沿 teacher-forcing 轨迹采集 simulator RGB：
+
+```bash
+python airsim_plugin/AirVLNSimulatorServerTool.py --gpus 0 --port 30000
+```
+
+```bash
+python inference/collect_tf_rgb.py ^
+  --split train ^
+  --batchSize 1 ^
+  --name v0_rgb_train ^
+  --maxAction 500 ^
+  --simulator_tool_port 30000
+```
+
+再把 LMDB 导出成 PNG 和索引：
+
+```bash
+python preprocess/export_lmdb_rgb.py ^
+  --lmdb-dir ../DATA/img_features/collect/v0_rgb_train/train_rgb ^
+  --output-root data/runtime_rgb/train ^
+  --index-output data/runtime_rgb/train_index.jsonl ^
+  --dataset-json ../DATA/data/aerialvln-s/train.json
+```
+
+## 3. 构造 step windows
+
 ```bash
 python preprocess/build_step_windows.py ^
   --dataset-json ../DATA/data/aerialvln-s/train.json ^
   --instruction-plan data/instruction_plan.jsonl ^
+  --rgb-index data/runtime_rgb/train_index.jsonl ^
   --output data/step_windows/train.jsonl
 ```
 
@@ -48,13 +76,12 @@ python preprocess/build_step_windows.py ^
 - RGB path。
 - reference pose。
 
-## 3. 构造 action prior cache
+## 4. 构造 action prior cache
 
 ```bash
 python preprocess/build_action_prior_cache.py ^
   --step-windows data/step_windows/train.jsonl ^
   --output data/action_prior_cache/train.jsonl ^
-  --image-root ../DATA/data/aerialvln-s ^
   --client qwen_api
 ```
 
@@ -64,7 +91,7 @@ python preprocess/build_action_prior_cache.py ^
 - `keyframes_loaded`
 - top action distribution。
 
-## 4. 构造 rollout labels
+## 5. 构造 rollout labels
 
 ```bash
 python preprocess/build_rollout_labels.py ^
@@ -78,7 +105,7 @@ python preprocess/build_rollout_labels.py ^
 - `heuristic_action_labels`
 - average cost by action。
 
-## 5. 构造 latent targets
+## 6. 构造 latent targets
 
 ```bash
 python preprocess/build_latent_targets.py ^
@@ -86,7 +113,6 @@ python preprocess/build_latent_targets.py ^
   --output-dir data/latent_targets/train ^
   --index-output data/latent_targets/train_index.jsonl ^
   --model-config configs/model.yaml ^
-  --image-root ../DATA/data/aerialvln-s ^
   --device cuda ^
   --gpu-ids 0
 ```
@@ -96,7 +122,7 @@ python preprocess/build_latent_targets.py ^
 - `encoded_from_images`
 - `missing_images_zero_fallback`
 
-## 6. 训练 evaluator
+## 7. 训练 evaluator
 
 ```bash
 python training/train_action_evaluator.py ^
@@ -104,7 +130,6 @@ python training/train_action_evaluator.py ^
   --rollout-labels data/rollout_labels/train.jsonl ^
   --action-prior-cache data/action_prior_cache/train.jsonl ^
   --latent-index data/latent_targets/train_index.jsonl ^
-  --image-root ../DATA/data/aerialvln-s ^
   --model-config configs/model.yaml ^
   --output-dir DATA/v0/checkpoints/action_evaluator ^
   --device cuda ^
@@ -121,13 +146,13 @@ python training/train_action_evaluator.py ^
 - `loss_curve.png`
 - `ckpt_last.pth`
 
-## 7. 启动 simulator server
+## 8. 启动 simulator server
 
 ```bash
 python airsim_plugin/AirVLNSimulatorServerTool.py --gpus 0 --port 30000
 ```
 
-## 8. 在线 eval
+## 9. 在线 eval
 
 ```bash
 python inference/run_eval_aerialvln.py ^
