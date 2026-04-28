@@ -18,8 +18,13 @@ def build_user_prompt(item_id: str, text: str) -> str:
     return (
         f"instruction_id: {item_id}\n"
         f"instruction: {text}\n\n"
-        "Return JSON matching the schema in the system prompt. "
-        "Use 3 to 8 milestones and include concrete verification cues."
+        "Parse this UAV instruction into 3 to 8 ordered milestones.\n"
+        "Important:\n"
+        "- Do not split tiny action-only clauses into isolated milestones unless necessary.\n"
+        "- Merge short clauses like fly up / turn left / turn right / land / stop into nearby landmark-grounded milestones whenever possible.\n"
+        "- Prefer meaningful navigation phases over fragmented steps.\n"
+        "- Keep landmarks concrete and verification_cues observable.\n"
+        "- Return exactly one JSON object matching the system schema.\n"
     )
 
 

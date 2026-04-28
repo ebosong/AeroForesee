@@ -221,6 +221,7 @@ class AirVLNSimulatorClientTool:
                                 assert not (img1d.flatten()[0] == img1d).all(), 'Failed to retrieve RGB image'
                             img_rgb = img1d.reshape(response_rgb.height, response_rgb.width, 3)
                             img_rgb = np.array(img_rgb)
+                            img_rgb = cv2.cvtColor(img_rgb, cv2.COLOR_BGR2RGB)
 
                         if get_depth:
                             assert response_depth.height == args.Image_Height_DEPTH and response_depth.width == args.Image_Width_DEPTH, 'Failed to retrieve DEPTH image'
@@ -280,6 +281,7 @@ class AirVLNSimulatorClientTool:
                             img1d = np.frombuffer(response_rgb.image_data_uint8, dtype=np.uint8)
                             img_rgb = img1d.reshape(response_rgb.height, response_rgb.width, 3)
                             img_rgb = np.array(img_rgb)
+                            img_rgb = cv2.cvtColor(img_rgb, cv2.COLOR_BGR2RGB)
 
                         if get_depth:
                             assert response_depth.height == args.Image_Height_DEPTH and response_depth.width == args.Image_Width_DEPTH, 'Failed to retrieve DEPTH image'

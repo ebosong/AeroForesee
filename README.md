@@ -360,8 +360,8 @@ python preprocess/parse_instruction.py \
   --dataset-json ../DATA/data/aerialvln-s/train.json \
   --output data/instruction_plan.jsonl \
   --bad-output data/bad_cases.jsonl \
-  --client qwen_api \
-  --max-retries 1
+  --client qwen_local \
+  --max-retries 5
 ```
 
 结果：
@@ -383,7 +383,7 @@ AirVLN/AerialVLN 的标注 JSON 通常不包含逐步 `rgb_path`。V0 的 action
 先启动 simulator server：
 
 ```bash
-python airsim_plugin/AirVLNSimulatorServerTool.py --gpus 0 --port 30000
+python airsim_plugin/AirVLNSimulatorServerTool.py --gpus 0 --port 31000
 ```
 
 再采集 RGB LMDB：
@@ -394,7 +394,7 @@ python inference/collect_tf_rgb.py \
   --batchSize 1 \
   --name v0_rgb_train \
   --maxAction 500 \
-  --simulator_tool_port 30000
+  --simulator_tool_port 31000
 ```
 
 默认会强制 `--run_type collect --collect_type TF --ablate_depth`，沿标注动作执行，并把每个 step 的 RGB 写入：
